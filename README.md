@@ -38,15 +38,29 @@ Installs to `~/.local/bin` by default. Set `PREFIX` to change:
 PREFIX=/usr/local make install
 ```
 
-### Voice Setup
+### Recommended Voices
 
-xsay works best with enhanced voices. Download one:
+xsay works out of the box with macOS default voices. For significantly better quality, download Enhanced or Premium voices (free, ~100-900MB each).
 
-**System Settings > Accessibility > Spoken Content > System Voice > Manage Voices**
+**Our top 5 after extensive testing:**
 
-Recommended: **Evan (Enhanced)** (default voice). Any Enhanced or Premium voice works.
+| Rank | Voice | Tier | Why |
+|------|-------|------|-----|
+| 1 | **Evan (Enhanced)** | Enhanced | Natural, balanced — xsay's default voice |
+| 2 | **Nathan (Enhanced)** | Enhanced | Clear, crisp articulation |
+| 3 | **Zoe (Premium)** | Premium | Rich, natural female voice |
+| 4 | **Tom (Enhanced)** | Enhanced | Deep, calm delivery |
+| 5 | **Allison (Premium)** | Premium | Warm, professional tone |
 
-Without an enhanced voice, xsay falls back to the system default.
+**How to download:**
+
+1. Open **System Settings**
+2. Go to **Accessibility > Spoken Content**
+3. Click **System Voice** dropdown > **Manage Voices...**
+4. Search for the voice name (e.g. "Evan") and click the download button
+5. Wait for download to complete (Enhanced: ~100-200MB, Premium: ~350-850MB)
+
+> Not required — xsay falls back gracefully to the system default voice if an Enhanced/Premium voice isn't installed. No errors, just lower audio quality.
 
 ---
 
