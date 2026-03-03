@@ -26,7 +26,7 @@ xsay v3.1: CLI command for TTS (in PATH, call via Bash tool)
   - {name} → inline sound effect (plays .aiff from soundfx/)
   - {N}    → pause in tenths of seconds ({5}=500ms, {10}=1s)
   - "word"  → emphasis micro-pause (200ms) around quoted terms
-  - prof:   → voice profile switch (ava:, lee:, evan:)
+  - prof:   → voice profile switch (evan:, zoe:, nathan:, tom:)
 
 ## sound_semantics
 Map sounds to meaning — consistent audio vocabulary:

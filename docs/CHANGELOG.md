@@ -1,5 +1,15 @@
 # xsay Changelog
 
+## v3.2 — 2026-03-03
+
+### Changed
+- **Trimmed to 4 voices**: Evan (Enhanced), Nathan (Enhanced), Zoe (Premium), Tom (Enhanced)
+- **Removed profiles**: ava, lee, allison, nicky, samantha — config bloat without quality justification
+- **Added [zoe] profile**: Zoe (Premium) at 180 wpm with `narrate` flag
+- **Undid evan↔nathan voice swap**: Each profile now uses its own voice
+- **Minimal flags**: Removed legacy aliases (narrate→ava, announce→lee, instructor→evan, student→ava)
+- **New flag mapping**: narrate→zoe, repo→nathan
+
 ## v3.1 — 2026-03-02
 
 ### Added

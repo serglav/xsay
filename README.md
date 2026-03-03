@@ -5,7 +5,7 @@ Project-aware macOS TTS CLI with voice profiles, inline sound effects, and async
 ```bash
 xsay "Hello world"
 xsay "{ping} Task complete {hero}"
-xsay ava: "Switching voices is easy"
+xsay zoe: "Switching voices is easy"
 ```
 
 ---
@@ -42,7 +42,7 @@ PREFIX=/usr/local make install
 
 xsay works out of the box with macOS default voices. For significantly better quality, download Enhanced or Premium voices (free, ~100-900MB each).
 
-**Our top 5 after extensive testing:**
+**Our top 4 after extensive testing (all ship as built-in profiles):**
 
 | Rank | Voice | Tier | Why |
 |------|-------|------|-----|
@@ -50,7 +50,6 @@ xsay works out of the box with macOS default voices. For significantly better qu
 | 2 | **Nathan (Enhanced)** | Enhanced | Clear, crisp articulation |
 | 3 | **Zoe (Premium)** | Premium | Rich, natural female voice |
 | 4 | **Tom (Enhanced)** | Enhanced | Deep, calm delivery |
-| 5 | **Allison (Premium)** | Premium | Warm, professional tone |
 
 **How to download:**
 
@@ -69,7 +68,7 @@ xsay works out of the box with macOS default voices. For significantly better qu
 ```bash
 xsay "Hello world"                    # speak with default voice
 xsay "{ping} Starting build {5}"      # sound effect + 500ms pause
-xsay ava: "Different voice"           # use a named profile
+xsay zoe: "Different voice"           # use a named profile
 xsay --sounds                         # list available sound effects
 xsay -l                               # list voice profiles
 ```
@@ -118,23 +117,19 @@ xsay 'This is "really" important'
 
 ## Voice Profiles
 
-8 built-in profiles. Switch with `name:` prefix or `-v name`.
+4 built-in profiles. Switch with `name:` prefix or `-v name`.
 
 | Profile | Voice | Rate | Use Case |
 |---------|-------|------|----------|
 | default | Evan (Enhanced) | 180 | Default, balanced |
-| ava | Ava (Premium) | 175 | Female, natural |
-| lee | Lee (Premium) | 200 | Fast, crisp |
-| evan | Nathan (Enhanced) | 190 | Instructor |
-| nathan | Evan (Enhanced) | 175 | Repo context announcer |
-| allison | Allison (Enhanced) | 180 | Neutral |
-| nicky | Nicky (Enhanced) | 190 | Energetic |
-| samantha | Samantha (Enhanced) | 185 | Familiar |
+| evan | Evan (Enhanced) | 175 | General use |
+| nathan | Nathan (Enhanced) | 190 | Repo context announcer |
+| zoe | Zoe (Premium) | 180 | Narration |
 | tom | Tom (Enhanced) | 185 | Deep, calm |
 
 ```bash
-xsay ava: "Hello from Ava"
-xsay -v lee "Fast delivery"
+xsay zoe: "Hello from Zoe"
+xsay -v nathan "Clear and crisp"
 ```
 
 Custom profiles can be added to your project `.xsay` config file.
@@ -185,8 +180,8 @@ When you switch git repos, xsay announces the new repository using the `[nathan]
 
 ```ini
 [nathan]
-voice=Evan (Enhanced)
-rate=175
+voice=Nathan (Enhanced)
+rate=190
 stale_minutes=5       # re-announce after N min idle (0=always, -1=never)
 enabled=true          # false to disable
 template=REPO {2} {repo} {5}

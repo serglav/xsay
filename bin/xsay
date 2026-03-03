@@ -1,5 +1,5 @@
 #!/bin/bash
-# xsay v3.1 — project-aware macOS TTS with voice-name profiles + inline sound effects
+# xsay v3.2 — project-aware macOS TTS with voice-name profiles + inline sound effects
 
 set -o errexit
 set -o nounset
@@ -326,7 +326,7 @@ resolve_flag_to_profile() {
     value="${value%"${value##*[![:space:]]}"}"
 
     if [ "${key}" = "flag" ]; then
-      # Support comma-separated flags: flag=ava,narrate,student
+      # Support comma-separated flags: flag=zoe,narrate
       local IFS=','
       local f
       for f in ${value}; do
@@ -508,8 +508,8 @@ ensure_master_config() {
 
   # Fallback: write minimal seed config (broken install — shipped default missing)
   {
-    echo "# xsay v3 master config — edit here, then delete project .xsay to regenerate"
-    echo "# Voices: Ava (Premium) | Allison (Enhanced) | Evan (Enhanced) | Lee (Premium)"
+    echo "# xsay v3.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "voice=${DEFAULT_VOICE}"
     echo "rate=${DEFAULT_RATE}"
     echo "volume=${DEFAULT_VOLUME}"
@@ -593,9 +593,8 @@ interactive_create_xsay() {
 
   # Fallback: write hardcoded seed (same content as ensure_master_config)
   {
-    echo "# xsay v3 master config — edit here, then delete project .xsay to regenerate"
-    echo "# Voices: Ava (Premium) | Allison (Enhanced) | Evan (Enhanced) | Lee (Premium)"
-    echo "#         Nathan (Enhanced) | Nicky (Enhanced) | Samantha (Enhanced) | Tom (Enhanced) | Zoe (Premium)"
+    echo "# xsay v3.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "# Keys: voice, rate (wpm), volume (0.0-1.0), pitch (0-127), flag (comma-separated triggers)"
     echo "voice=${DEFAULT_VOICE}"
     echo "rate=${DEFAULT_RATE}"
@@ -604,59 +603,31 @@ interactive_create_xsay() {
     echo "logging_enabled=${DEFAULT_LOGGING_ENABLED}"
     echo "log_subdir=${DEFAULT_LOG_SUBDIR}"
     echo ""
-    echo "# ─── Voice profiles ─── usage: xsay ava: hello world"
-    echo ""
-    echo "[ava]"
-    echo "voice=Ava (Premium)"
-    echo "rate=175"
-    echo "volume=1.0"
-    echo "pitch=45"
-    echo "flag=ava,narrate,student"
-    echo ""
-    echo "[lee]"
-    echo "voice=Lee (Premium)"
-    echo "rate=200"
-    echo "volume=1.0"
-    echo "pitch=45"
-    echo "flag=lee,announce"
+    echo "# ─── Voice profiles ─── usage: xsay evan: hello world"
     echo ""
     echo "[evan]"
-    echo "voice=Nathan (Enhanced)"
-    echo "rate=190"
-    echo "volume=0.9"
-    echo "pitch=45"
-    echo "flag=evan,instructor"
-    echo ""
-    echo "[nathan]"
     echo "voice=Evan (Enhanced)"
     echo "rate=175"
     echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=evan"
+    echo ""
+    echo "[nathan]"
+    echo "voice=Nathan (Enhanced)"
+    echo "rate=190"
+    echo "volume=0.9"
     echo "pitch=45"
     echo "flag=nathan,repo"
     echo "stale_minutes=5"
     echo "enabled=true"
     echo "template=REPO {2} {repo} {5}"
     echo ""
-    echo "[allison]"
-    echo "voice=Allison (Enhanced)"
+    echo "[zoe]"
+    echo "voice=Zoe (Premium)"
     echo "rate=180"
     echo "volume=1.0"
     echo "pitch=45"
-    echo "flag=allison"
-    echo ""
-    echo "[nicky]"
-    echo "voice=Nicky (Enhanced)"
-    echo "rate=190"
-    echo "volume=1.0"
-    echo "pitch=45"
-    echo "flag=nicky"
-    echo ""
-    echo "[samantha]"
-    echo "voice=Samantha (Enhanced)"
-    echo "rate=185"
-    echo "volume=1.0"
-    echo "pitch=45"
-    echo "flag=samantha"
+    echo "flag=zoe,narrate"
     echo ""
     echo "[tom]"
     echo "voice=Tom (Enhanced)"
@@ -1389,13 +1360,13 @@ show_help() {
   fi
 
   cat <<EOF
-xsay v3.1 — project-aware text-to-speech with voice-name profiles
+xsay v3.2 — project-aware text-to-speech with voice-name profiles
 
 USAGE
   xsay "message"                speak with default voice (Zoe)
   xsay "Hello {10} world"       speak with 1-second pause
   xsay "{ping} task done"       play ping sound, then speak
-  xsay ava: message              speak with named profile
+  xsay zoe: message              speak with named profile
   xsay -v evan message           speak with profile by section name
 
 OPTIONS
@@ -1421,9 +1392,8 @@ SOUND EFFECTS
   Run: xsay --sounds  to list all available effects.
 
 PROFILES
-  ava, lee, evan, nathan, allison, nicky, samantha, tom
-  Legacy aliases: narrate→ava, announce→lee, instructor→evan,
-                  student→ava, repo→nathan
+  evan, nathan, zoe, tom
+  Flags: narrate→zoe, repo→nathan
 EOF
 }
 
@@ -1432,7 +1402,7 @@ show_context() {
   local config_file="${project_root}/.xsay"
 
   cat <<'CTXEOF'
-# xsay v3.1 — Project-Aware TTS CLI
+# xsay v3.2 — Project-Aware TTS CLI
 
 Text-to-speech with voice-name profiles, volume/pitch controls, inline sound effects, async FIFO queue, and git repo context. macOS only (`say` command).
 
@@ -1442,7 +1412,7 @@ Text-to-speech with voice-name profiles, volume/pitch controls, inline sound eff
 xsay "message"                 # default voice (Zoe Premium)
 xsay "Hello {10} world"       # 1-second inline pause ({N} = tenths of a second)
 xsay "{ping} task done"       # play ping sound, then speak
-xsay ava: message              # flag shorthand → [ava] profile
+xsay zoe: message              # flag shorthand → [zoe] profile
 xsay -v evan message           # explicit profile by section name
 xsay -l                        # list profiles with vol/pitch
 xsay --sounds                  # list available sound effects
@@ -1493,14 +1463,10 @@ INI-style at project root. Auto-created from master config.
 
 | Profile | Voice | Rate | Vol | Pitch | Flags |
 |---------|-------|------|-----|-------|-------|
-| default | Zoe (Premium) | 180 | 1.0 | 45 | — |
-| ava | Ava (Premium) | 175 | 1.0 | 45 | ava,narrate,student |
-| lee | Lee (Premium) | 200 | 1.0 | 45 | lee,announce |
-| evan | Evan (Enhanced) | 175 | 1.0 | 45 | evan,instructor |
+| default | Evan (Enhanced) | 180 | 1.0 | 45 | — |
+| evan | Evan (Enhanced) | 175 | 1.0 | 45 | evan |
 | nathan | Nathan (Enhanced) | 190 | 0.9 | 45 | nathan,repo |
-| allison | Allison (Enhanced) | 180 | 1.0 | 45 | allison |
-| nicky | Nicky (Enhanced) | 190 | 1.0 | 45 | nicky |
-| samantha | Samantha (Enhanced) | 185 | 1.0 | 45 | samantha |
+| zoe | Zoe (Premium) | 180 | 1.0 | 45 | zoe,narrate |
 | tom | Tom (Enhanced) | 185 | 1.0 | 45 | tom |
 
 ## Architecture
@@ -1603,17 +1569,15 @@ REPO CONTEXT
   Staleness: file mtime compared against stale_minutes (macOS stat -f %m).
 
 PROFILE SYSTEM
-  Built-in profiles synced from master: ava, lee, evan, nathan,
-  allison, nicky, samantha, tom. Custom profiles preserved by --update.
+  Built-in profiles synced from master: evan, nathan, zoe, tom.
+  Custom profiles preserved by --update.
 
-  Voice-name profiles: section names match the voice (e.g., [ava] = Ava).
-  Comma-separated flags: flag=ava,narrate,student (all resolve to [ava]).
-  Legacy aliases: narrate→ava, announce→lee, instructor→evan, student→ava, repo→nathan.
-  Explicit: -v ava "message" selects by section name directly.
+  Voice-name profiles: section names match the voice (e.g., [evan] = Evan).
+  Comma-separated flags: flag=zoe,narrate (all resolve to [zoe]).
+  Flags: narrate→zoe, repo→nathan.
+  Explicit: -v evan "message" selects by section name directly.
 
-  Voices: Ava (Premium), Allison (Enhanced), Evan (Enhanced), Lee (Premium),
-          Nathan (Enhanced), Nicky (Enhanced), Samantha (Enhanced),
-          Tom (Enhanced), Zoe (Premium)
+  Voices: Evan (Enhanced), Nathan (Enhanced), Zoe (Premium), Tom (Enhanced)
   See all voices: say -v '?'
 
 VOLUME & PITCH
