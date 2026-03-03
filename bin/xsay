@@ -1,0 +1,1856 @@
+#!/bin/bash
+# xsay v3.1 — project-aware macOS TTS with voice-name profiles + inline sound effects
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+DEFAULT_VOICE="Evan (Enhanced)"
+DEFAULT_RATE="180"
+DEFAULT_VOLUME="1.0"
+DEFAULT_PITCH="45"
+DEFAULT_LOGGING_ENABLED="true"
+DEFAULT_LOG_SUBDIR="loom/xsay"
+
+CONFIG_VOICE="${DEFAULT_VOICE}"
+CONFIG_RATE="${DEFAULT_RATE}"
+CONFIG_VOLUME="${DEFAULT_VOLUME}"
+CONFIG_PITCH="${DEFAULT_PITCH}"
+CONFIG_LOGGING_ENABLED="${DEFAULT_LOGGING_ENABLED}"
+CONFIG_LOG_SUBDIR="${DEFAULT_LOG_SUBDIR}"
+
+FIFO_PATH="/tmp/xsay-${USER}.fifo"
+PID_FILE="/tmp/xsay-${USER}.pid"
+LAST_REPO_FILE="/tmp/xsay-${USER}.last_repo"
+
+# --- Dynamic path resolution ---
+# Priority: $XSAY_PREFIX env > script-relative > $HOME/.local fallback
+_resolve_script_dir() {
+  local source="${BASH_SOURCE[0]}"
+  # Resolve symlinks portably (macOS lacks readlink -f)
+  while [ -L "$source" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ $source != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
+_resolve_prefix() {
+  if [ -n "${XSAY_PREFIX:-}" ]; then
+    echo "$XSAY_PREFIX"; return
+  fi
+  local script_dir
+  script_dir="$(_resolve_script_dir)"
+  local candidate="${script_dir}/.."
+  if [ -d "${candidate}/share/xsay" ]; then
+    (cd "$candidate" && pwd); return
+  fi
+  echo "${HOME}/.local"
+}
+
+XSAY_INSTALL_PREFIX="$(_resolve_prefix)"
+MASTER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xsay"
+MASTER_CONFIG_FILE="${MASTER_CONFIG_DIR}/xsay.conf"
+SOUNDFX_DIR="${XSAY_INSTALL_PREFIX}/share/xsay/soundfx"
+DEFAULT_CONFIG_FILE="${XSAY_INSTALL_PREFIX}/share/xsay/xsay.conf"
+
+DEFAULT_REPO_STALE_MINUTES="5"
+DEFAULT_REPO_ENABLED="true"
+DEFAULT_REPO_TEMPLATE="REPO {2} {repo} {5}"
+
+REPO_STALE_MINUTES="${DEFAULT_REPO_STALE_MINUTES}"
+REPO_ENABLED="${DEFAULT_REPO_ENABLED}"
+REPO_TEMPLATE="${DEFAULT_REPO_TEMPLATE}"
+
+NON_INTERACTIVE_MISSING_CONFIG="false"
+PROJECT_ROOT_IS_HOME="false"
+XSAY_RESOLVED_ROOT=""
+
+GIT_REPO_NAME=""
+GIT_BRANCH=""
+GIT_COMMIT_SUBJECT=""
+GIT_COMMIT_RELTIME=""
+
+: '
+CDD SECTION 1: ROOT_DETECTION [pure]
+SPEC:
+  PRE: current working directory set; HOME may be set; filesystem readable.
+  IO:
+    in: PWD environment, HOME environment (optional)
+    out: echo/return project_root path (string)
+  BEHAVIOR: walk up from PWD toward /; prefer .xsay in cwd/ancestors (stop at HOME), else .git/pyproject.toml/package.json, else .claude (not at HOME), else PWD.
+  SUCCESS: returns resolved project_root path.
+  FAILURE: none (falls back gracefully).
+  INVAR: never return HOME based solely on .claude; never traverse above root (/).
+API:
+  root_detection() -> echoes resolved project_root
+DOCSTRING CONTRACT:
+  PRE: PWD set; filesystem accessible.
+  POST: outputs a path; path respects priority order; never above / or HOME via .claude.
+'
+root_detection() {
+  local dir
+  dir="$(pwd)"
+  local home="${HOME:-}"
+
+  while [ "${dir}" != "/" ]; do
+    if [ -f "${dir}/.xsay" ]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+
+    if [ -d "${dir}/.git" ] || [ -f "${dir}/pyproject.toml" ] || [ -f "${dir}/package.json" ]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+
+    if [ -n "${home}" ] && [ "${dir}" = "${home}" ]; then
+      break
+    fi
+
+    if [ -d "${dir}/.claude" ]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+
+    dir="$(dirname "${dir}")"
+  done
+
+  printf '%s\n' "$(pwd)"
+}
+
+: '
+CDD SECTION 2: CONFIG_PARSE [pure]
+SPEC:
+  PRE: project_root path provided; .xsay may or may not exist.
+  IO:
+    in: project_root; target_profile name (default: "default")
+    in: .xsay contents (key=value lines, [section] headers, comments allowed)
+    out: config map (voice, rate, volume, pitch, logging_enabled, log_subdir) via global variables.
+  BEHAVIOR:
+    - Single-pass section-aware parser.
+    - Lines before any [section] header belong to "default" section (always applied).
+    - Lines inside [target_profile] section overlay defaults.
+    - Lines inside other sections are skipped.
+    - Project-level keys (logging_enabled, log_subdir) only from default section.
+    - Voice-level keys (voice, rate, volume, pitch) from default + target section.
+    - flag key recognized but skipped (used by resolve_flag_to_profile).
+    - Unknown keys warned only in active sections.
+  SUCCESS: updates CONFIG_* variables with effective config values.
+  FAILURE: on read errors, fall back to defaults with warning.
+  INVAR: defaults preserved when keys absent or invalid; [default] header treated as default section.
+API:
+  config_parse(project_root, [target_profile])
+DOCSTRING CONTRACT:
+  PRE: project_root is readable.
+  POST: CONFIG_* reflects effective config; defaults remain when overrides missing or invalid.
+'
+config_parse() {
+  local project_root="$1"
+  local target_profile="${2:-default}"
+  local config_file="${project_root}/.xsay"
+  local current_section="default"
+
+  CONFIG_VOICE="${DEFAULT_VOICE}"
+  CONFIG_RATE="${DEFAULT_RATE}"
+  CONFIG_VOLUME="${DEFAULT_VOLUME}"
+  CONFIG_PITCH="${DEFAULT_PITCH}"
+  CONFIG_LOGGING_ENABLED="${DEFAULT_LOGGING_ENABLED}"
+  CONFIG_LOG_SUBDIR="${DEFAULT_LOG_SUBDIR}"
+  REPO_STALE_MINUTES="${DEFAULT_REPO_STALE_MINUTES}"
+  REPO_ENABLED="${DEFAULT_REPO_ENABLED}"
+  REPO_TEMPLATE="${DEFAULT_REPO_TEMPLATE}"
+
+  if [ ! -f "${config_file}" ]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ""|"#"*)
+        continue
+        ;;
+    esac
+
+    # Detect [section] header
+    if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\][[:space:]]*$ ]]; then
+      current_section="${BASH_REMATCH[1]}"
+      continue
+    fi
+
+    # Only process keys from default section or target profile section
+    if [ "${current_section}" != "default" ] && [ "${current_section}" != "${target_profile}" ]; then
+      continue
+    fi
+
+    if [[ "${line}" != *"="* ]]; then
+      echo "Warning: Skipping malformed config line: ${line}" >&2
+      continue
+    fi
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+
+    # Trim simple leading/trailing whitespace from key and value.
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    case "${key}" in
+      voice)
+        if [ -n "${value}" ]; then
+          CONFIG_VOICE="${value}"
+        fi
+        ;;
+      rate)
+        if [ -n "${value}" ]; then
+          CONFIG_RATE="${value}"
+        fi
+        ;;
+      volume)
+        if [ -n "${value}" ]; then
+          CONFIG_VOLUME="${value}"
+        fi
+        ;;
+      pitch)
+        if [ -n "${value}" ]; then
+          CONFIG_PITCH="${value}"
+        fi
+        ;;
+      tone)
+        # v2 compat: recognized but ignored (replaced by volume/pitch in v3)
+        ;;
+      flag)
+        # Recognized; used by resolve_flag_to_profile, skip here
+        ;;
+      logging_enabled)
+        if [ "${current_section}" = "default" ] && [ -n "${value}" ]; then
+          local v_lower
+          v_lower="$(printf '%s' "${value}" | tr 'A-Z' 'a-z')"
+          case "${v_lower}" in
+            false|0|no|off)
+              CONFIG_LOGGING_ENABLED="false"
+              ;;
+            ""|true|1|yes|on)
+              CONFIG_LOGGING_ENABLED="true"
+              ;;
+            *)
+              CONFIG_LOGGING_ENABLED="true"
+              ;;
+          esac
+        fi
+        ;;
+      log_subdir)
+        if [ "${current_section}" = "default" ] && [ -n "${value}" ]; then
+          CONFIG_LOG_SUBDIR="${value}"
+        fi
+        ;;
+      stale_minutes)
+        if [ "${current_section}" = "nathan" ] || [ "${target_profile}" = "nathan" ]; then
+          REPO_STALE_MINUTES="${value}"
+        fi
+        ;;
+      enabled)
+        if [ "${current_section}" = "nathan" ] || [ "${target_profile}" = "nathan" ]; then
+          local e_lower
+          e_lower="$(printf '%s' "${value}" | tr 'A-Z' 'a-z')"
+          case "${e_lower}" in
+            false|0|no|off) REPO_ENABLED="false" ;;
+            *) REPO_ENABLED="true" ;;
+          esac
+        fi
+        ;;
+      template)
+        if [ "${current_section}" = "nathan" ] || [ "${target_profile}" = "nathan" ]; then
+          REPO_TEMPLATE="${value}"
+        fi
+        ;;
+      *)
+        echo "Warning: Unknown config key '${key}' in .xsay; ignoring" >&2
+        ;;
+    esac
+  done < "${config_file}"
+}
+
+: '
+CDD SECTION 2b: FLAG_RESOLVE [pure]
+SPEC:
+  PRE: project_root path provided; flag_name string provided.
+  IO:
+    in: project_root; flag_name (string to match against flag= values in [section] blocks)
+    out: echo section name if matched; return 0 on match, 1 on no match.
+  BEHAVIOR: scan .xsay for [section] headers and flag= keys; split comma-separated flags; return first section whose flag matches.
+  SUCCESS: echoes section name, returns 0.
+  FAILURE: returns 1 (no match or no config file).
+  INVAR: only matches flag= inside sections, not in default (top-level).
+API:
+  resolve_flag_to_profile(project_root, flag_name) -> echoes section name or returns 1
+DOCSTRING CONTRACT:
+  PRE: project_root is readable; flag_name is non-empty.
+  POST: outputs section name on match; no side effects.
+'
+resolve_flag_to_profile() {
+  local project_root="$1"
+  local flag_name="$2"
+  local config_file="${project_root}/.xsay"
+  local current_section=""
+
+  if [ ! -f "${config_file}" ]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ""|"#"*)
+        continue
+        ;;
+    esac
+
+    if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\] ]]; then
+      current_section="${BASH_REMATCH[1]}"
+      continue
+    fi
+
+    if [ -z "${current_section}" ]; then
+      continue
+    fi
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    if [ "${key}" = "flag" ]; then
+      # Support comma-separated flags: flag=ava,narrate,student
+      local IFS=','
+      local f
+      for f in ${value}; do
+        # Trim whitespace
+        f="${f#"${f%%[![:space:]]*}"}"
+        f="${f%"${f##*[![:space:]]}"}"
+        if [ "${f}" = "${flag_name}" ]; then
+          printf '%s\n' "${current_section}"
+          return 0
+        fi
+      done
+    fi
+  done < "${config_file}"
+
+  return 1
+}
+
+: '
+CDD SECTION 2c: PROFILE_LIST [pure]
+SPEC:
+  PRE: project_root resolved; CONFIG_* set by config_parse for default profile.
+  IO:
+    in: project_root
+    out: formatted list of voice profiles to stdout.
+  BEHAVIOR: print default profile, then scan .xsay for [section] headers and their voice/rate/volume/pitch/flag values.
+  SUCCESS: prints profile table.
+  FAILURE: none (prints default only if no config).
+  INVAR: read-only; no side effects.
+API:
+  list_profiles(project_root)
+DOCSTRING CONTRACT:
+  PRE: CONFIG_* set for default.
+  POST: formatted profile list on stdout.
+'
+list_profiles() {
+  local project_root="$1"
+  local config_file="${project_root}/.xsay"
+
+  echo "Voice profiles:"
+  printf "  %-18s voice=%-22s rate=%-5s vol=%-5s pitch=%-5s\n" "default" "${CONFIG_VOICE}" "${CONFIG_RATE}" "${CONFIG_VOLUME}" "${CONFIG_PITCH}"
+
+  if [ ! -f "${config_file}" ]; then
+    return 0
+  fi
+
+  local current_section="" sec_voice="" sec_rate="" sec_volume="" sec_pitch="" sec_flag=""
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ""|"#"*)
+        continue
+        ;;
+    esac
+
+    if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\] ]]; then
+      # Print previous section if any
+      if [ -n "${current_section}" ]; then
+        local flag_info=""
+        if [ -n "${sec_flag}" ]; then
+          flag_info="  flags=${sec_flag}"
+        fi
+        printf "  %-18s voice=%-22s rate=%-5s vol=%-5s pitch=%-5s%s\n" \
+          "${current_section}" "${sec_voice:-${DEFAULT_VOICE}}" \
+          "${sec_rate:-${DEFAULT_RATE}}" "${sec_volume:-${DEFAULT_VOLUME}}" \
+          "${sec_pitch:-${DEFAULT_PITCH}}" "${flag_info}"
+      fi
+      current_section="${BASH_REMATCH[1]}"
+      sec_voice=""
+      sec_rate=""
+      sec_volume=""
+      sec_pitch=""
+      sec_flag=""
+      continue
+    fi
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    case "${key}" in
+      voice) sec_voice="${value}" ;;
+      rate) sec_rate="${value}" ;;
+      volume) sec_volume="${value}" ;;
+      pitch) sec_pitch="${value}" ;;
+      flag) sec_flag="${value}" ;;
+    esac
+  done < "${config_file}"
+
+  # Print last section
+  if [ -n "${current_section}" ]; then
+    local flag_info=""
+    if [ -n "${sec_flag}" ]; then
+      flag_info="  flags=${sec_flag}"
+    fi
+    printf "  %-18s voice=%-22s rate=%-5s vol=%-5s pitch=%-5s%s\n" \
+      "${current_section}" "${sec_voice:-${DEFAULT_VOICE}}" \
+      "${sec_rate:-${DEFAULT_RATE}}" "${sec_volume:-${DEFAULT_VOLUME}}" \
+      "${sec_pitch:-${DEFAULT_PITCH}}" "${flag_info}"
+  fi
+}
+
+: '
+CDD SECTION 2d: PROFILE_EXISTS [pure]
+SPEC:
+  PRE: project_root path provided; profile_name string provided.
+  IO:
+    in: project_root; profile_name
+    out: return 0 if [profile_name] section exists in .xsay, 1 otherwise.
+  BEHAVIOR: grep for section header in config file.
+  SUCCESS: returns 0.
+  FAILURE: returns 1.
+  INVAR: read-only.
+API:
+  profile_exists(project_root, profile_name) -> return code
+DOCSTRING CONTRACT:
+  PRE: project_root is readable.
+  POST: 0 if section found, 1 otherwise.
+'
+profile_exists() {
+  local project_root="$1"
+  local profile_name="$2"
+  local config_file="${project_root}/.xsay"
+
+  if [ ! -f "${config_file}" ]; then
+    return 1
+  fi
+
+  grep -q "^\[${profile_name}\]" "${config_file}"
+}
+
+: '
+CDD SECTION 3: MASTER_CONFIG [edge]
+SPEC:
+  PRE: MASTER_CONFIG_DIR and MASTER_CONFIG_FILE globals set.
+  IO:
+    in: none
+    out: MASTER_CONFIG_FILE written with seed template if absent; warnings on stderr.
+  BEHAVIOR:
+    - If MASTER_CONFIG_FILE already exists, return 0 immediately (idempotent).
+    - Attempt mkdir -p MASTER_CONFIG_DIR; warn and return 0 on failure.
+    - Check MASTER_CONFIG_DIR is writable; warn and return 0 on failure.
+    - Write hardcoded seed template with all standard profiles plus [repo] profile.
+    - On write failure, warn and return 0.
+  SUCCESS: MASTER_CONFIG_FILE exists with seed template.
+  FAILURE: any filesystem error produces a warning; function always returns 0.
+  INVAR: never overwrites existing config; always returns 0 (best-effort).
+API:
+  ensure_master_config()
+DOCSTRING CONTRACT:
+  PRE: MASTER_CONFIG_DIR, MASTER_CONFIG_FILE, DEFAULT_CONFIG_FILE globals set.
+  POST: MASTER_CONFIG_FILE exists or a warning was emitted; exits 0 always.
+'
+ensure_master_config() {
+  if [ -f "${MASTER_CONFIG_FILE}" ]; then
+    return 0
+  fi
+
+  if ! mkdir -p "${MASTER_CONFIG_DIR}" 2>/dev/null; then
+    echo "Warning: Could not create master config directory '${MASTER_CONFIG_DIR}'; skipping." >&2
+    return 0
+  fi
+
+  if [ ! -w "${MASTER_CONFIG_DIR}" ]; then
+    echo "Warning: Master config directory '${MASTER_CONFIG_DIR}' is not writable; skipping." >&2
+    return 0
+  fi
+
+  # Try copying the shipped default config first
+  if [ -f "${DEFAULT_CONFIG_FILE}" ]; then
+    cp "${DEFAULT_CONFIG_FILE}" "${MASTER_CONFIG_FILE}" 2>/dev/null || {
+      echo "Warning: Failed to copy default config to '${MASTER_CONFIG_FILE}'." >&2
+      return 0
+    }
+    return 0
+  fi
+
+  # Fallback: write minimal seed config (broken install — shipped default missing)
+  {
+    echo "# xsay v3 master config — edit here, then delete project .xsay to regenerate"
+    echo "# Voices: Ava (Premium) | Allison (Enhanced) | Evan (Enhanced) | Lee (Premium)"
+    echo "voice=${DEFAULT_VOICE}"
+    echo "rate=${DEFAULT_RATE}"
+    echo "volume=${DEFAULT_VOLUME}"
+    echo "pitch=${DEFAULT_PITCH}"
+    echo "logging_enabled=${DEFAULT_LOGGING_ENABLED}"
+    echo "log_subdir=${DEFAULT_LOG_SUBDIR}"
+  } > "${MASTER_CONFIG_FILE}" 2>/dev/null || {
+    echo "Warning: Failed to write seed config at '${MASTER_CONFIG_FILE}'." >&2
+    return 0
+  }
+}
+
+: '
+CDD SECTION 3: AUTO_CREATE_XSAY [edge]
+SPEC:
+  PRE: .xsay missing at candidate root; candidate root provided.
+  IO:
+    in: candidate_root path
+    out: .xsay file with defaults + voice profiles; warnings on stderr; echo resolved root path.
+  BEHAVIOR:
+    - If .xsay exists at candidate_root, return candidate_root immediately.
+    - If candidate_root is HOME, never create .xsay there; warn and return candidate_root.
+    - Otherwise, call ensure_master_config; if MASTER_CONFIG_FILE exists, cp it to project .xsay.
+    - If master config unavailable, fall back to hardcoded seed (same content as ensure_master_config).
+    - Requires writable target directory.
+  SUCCESS: .xsay created with defaults and voice profiles.
+  FAILURE: refuse to create at HOME/unwritable; warn accordingly.
+  INVAR: never overwrite existing .xsay.
+API:
+  interactive_create_xsay(candidate_root) -> echoes resolved root path
+DOCSTRING CONTRACT:
+  PRE: candidate_root resolved; .xsay absent.
+  POST: .xsay exists if target is writable and not HOME; warnings on skips.
+'
+interactive_create_xsay() {
+  local candidate_root="$1"
+  local home="${HOME:-}"
+
+  if [ -f "${candidate_root}/.xsay" ]; then
+    XSAY_RESOLVED_ROOT="${candidate_root}"
+    printf '%s\n' "${candidate_root}"
+    return 0
+  fi
+
+  if [ -n "${home}" ] && [ "${candidate_root}" = "${home}" ]; then
+    PROJECT_ROOT_IS_HOME="true"
+    echo "Warning: .xsay missing but candidate root is HOME; not creating config there." >&2
+    XSAY_RESOLVED_ROOT="${candidate_root}"
+    printf '%s\n' "${candidate_root}"
+    return 0
+  fi
+
+  # Auto-create .xsay at detected project root (no interactive prompts)
+  local target_root="${candidate_root}"
+
+  if ! mkdir -p "${target_root}" 2>/dev/null; then
+    echo "Warning: Could not ensure target directory '${target_root}' exists; skipping .xsay creation." >&2
+    printf '%s\n' "${candidate_root}"
+    return 0
+  fi
+
+  if [ ! -w "${target_root}" ]; then
+    echo "Warning: Target '${target_root}' is not writable; skipping .xsay creation." >&2
+    printf '%s\n' "${candidate_root}"
+    return 0
+  fi
+
+  ensure_master_config
+
+  local config_file="${target_root}/.xsay"
+
+  if [ -f "${MASTER_CONFIG_FILE}" ]; then
+    if ! cp "${MASTER_CONFIG_FILE}" "${config_file}" 2>/dev/null; then
+      echo "Warning: Failed to copy master config to '${config_file}'; falling back to hardcoded seed." >&2
+    else
+      XSAY_RESOLVED_ROOT="${target_root}"
+      printf '%s\n' "${target_root}"
+      return 0
+    fi
+  fi
+
+  # Fallback: write hardcoded seed (same content as ensure_master_config)
+  {
+    echo "# xsay v3 master config — edit here, then delete project .xsay to regenerate"
+    echo "# Voices: Ava (Premium) | Allison (Enhanced) | Evan (Enhanced) | Lee (Premium)"
+    echo "#         Nathan (Enhanced) | Nicky (Enhanced) | Samantha (Enhanced) | Tom (Enhanced) | Zoe (Premium)"
+    echo "# Keys: voice, rate (wpm), volume (0.0-1.0), pitch (0-127), flag (comma-separated triggers)"
+    echo "voice=${DEFAULT_VOICE}"
+    echo "rate=${DEFAULT_RATE}"
+    echo "volume=${DEFAULT_VOLUME}"
+    echo "pitch=${DEFAULT_PITCH}"
+    echo "logging_enabled=${DEFAULT_LOGGING_ENABLED}"
+    echo "log_subdir=${DEFAULT_LOG_SUBDIR}"
+    echo ""
+    echo "# ─── Voice profiles ─── usage: xsay ava: hello world"
+    echo ""
+    echo "[ava]"
+    echo "voice=Ava (Premium)"
+    echo "rate=175"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=ava,narrate,student"
+    echo ""
+    echo "[lee]"
+    echo "voice=Lee (Premium)"
+    echo "rate=200"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=lee,announce"
+    echo ""
+    echo "[evan]"
+    echo "voice=Nathan (Enhanced)"
+    echo "rate=190"
+    echo "volume=0.9"
+    echo "pitch=45"
+    echo "flag=evan,instructor"
+    echo ""
+    echo "[nathan]"
+    echo "voice=Evan (Enhanced)"
+    echo "rate=175"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=nathan,repo"
+    echo "stale_minutes=5"
+    echo "enabled=true"
+    echo "template=REPO {2} {repo} {5}"
+    echo ""
+    echo "[allison]"
+    echo "voice=Allison (Enhanced)"
+    echo "rate=180"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=allison"
+    echo ""
+    echo "[nicky]"
+    echo "voice=Nicky (Enhanced)"
+    echo "rate=190"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=nicky"
+    echo ""
+    echo "[samantha]"
+    echo "voice=Samantha (Enhanced)"
+    echo "rate=185"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=samantha"
+    echo ""
+    echo "[tom]"
+    echo "voice=Tom (Enhanced)"
+    echo "rate=185"
+    echo "volume=1.0"
+    echo "pitch=45"
+    echo "flag=tom"
+  } > "${config_file}" 2>/dev/null || {
+    echo "Warning: Failed to write .xsay at '${config_file}'." >&2
+    XSAY_RESOLVED_ROOT="${candidate_root}"
+    printf '%s\n' "${candidate_root}"
+    return 0
+  }
+
+  XSAY_RESOLVED_ROOT="${target_root}"
+  printf '%s\n' "${target_root}"
+}
+
+: '
+CDD SECTION 3b: UPDATE_PROJECT_CONFIG [edge]
+SPEC:
+  PRE: project_root resolved; .xsay exists; MASTER_CONFIG_FILE exists or ensure_master_config called.
+  IO:
+    in: project_root
+    out: updated .xsay at project_root; summary to stdout; warnings on stderr.
+  BEHAVIOR:
+    - Ensure master config exists (call ensure_master_config).
+    - If no master config available, error and return 1.
+    - If no project .xsay exists, error and return 1.
+    - Parse master config into a list of built-in section names and their content blocks.
+    - Parse project .xsay: separate header (comments + default keys before first [section]),
+      built-in sections (those matching master), and custom sections (those NOT in master).
+    - Rebuild .xsay: master header + master default keys + master built-in sections + project custom sections.
+    - Report what changed: sections added, sections reset, custom sections preserved.
+  SUCCESS: .xsay updated with master-tracked sections synced and custom sections preserved.
+  FAILURE: missing master or project config; filesystem errors; returns 1.
+  INVAR: custom sections (not in master) are never modified or removed.
+API:
+  update_project_config(project_root)
+DOCSTRING CONTRACT:
+  PRE: project_root writable; ensure_master_config callable.
+  POST: .xsay reflects master for built-in sections; custom sections preserved verbatim.
+'
+update_project_config() {
+  local project_root="$1"
+  local config_file="${project_root}/.xsay"
+
+  ensure_master_config
+
+  if [ ! -f "${MASTER_CONFIG_FILE}" ]; then
+    echo "Error: Master config not available at '${MASTER_CONFIG_FILE}'." >&2
+    return 1
+  fi
+
+  if [ ! -f "${config_file}" ]; then
+    echo "Error: No .xsay config found at '${config_file}'. Run xsay first to create one." >&2
+    return 1
+  fi
+
+  # Collect master section names
+  local master_sections=""
+  while IFS= read -r line || [ -n "${line}" ]; do
+    if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\] ]]; then
+      master_sections="${master_sections} ${BASH_REMATCH[1]}"
+    fi
+  done < "${MASTER_CONFIG_FILE}"
+
+  # Collect project custom sections (those NOT in master)
+  local project_sections=""
+  local current_section=""
+  local custom_blocks=""
+  local in_custom="false"
+  local custom_block=""
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\] ]]; then
+      # Flush previous custom block
+      if [ "${in_custom}" = "true" ] && [ -n "${custom_block}" ]; then
+        custom_blocks="${custom_blocks}${custom_block}"
+      fi
+
+      current_section="${BASH_REMATCH[1]}"
+      local is_builtin="false"
+      for ms in ${master_sections}; do
+        if [ "${ms}" = "${current_section}" ]; then
+          is_builtin="true"
+          break
+        fi
+      done
+
+      if [ "${is_builtin}" = "false" ]; then
+        in_custom="true"
+        custom_block=$'\n'"${line}"$'\n'
+        project_sections="${project_sections} ${current_section}"
+      else
+        in_custom="false"
+        custom_block=""
+      fi
+      continue
+    fi
+
+    if [ "${in_custom}" = "true" ]; then
+      custom_block="${custom_block}${line}"$'\n'
+    fi
+  done < "${config_file}"
+
+  # Flush last custom block
+  if [ "${in_custom}" = "true" ] && [ -n "${custom_block}" ]; then
+    custom_blocks="${custom_blocks}${custom_block}"
+  fi
+
+  # Build new config: master content + custom sections appended
+  local new_config
+  new_config="$(cat "${MASTER_CONFIG_FILE}")"
+
+  if [ -n "${custom_blocks}" ]; then
+    new_config="${new_config}${custom_blocks}"
+  fi
+
+  # Write updated config
+  printf '%s\n' "${new_config}" > "${config_file}" 2>/dev/null || {
+    echo "Error: Failed to write updated config to '${config_file}'." >&2
+    return 1
+  }
+
+  # Report
+  echo "xsay: updated ${config_file}"
+  echo "  Built-in profiles synced from master:${master_sections}"
+  if [ -n "${project_sections}" ]; then
+    echo "  Custom profiles preserved:${project_sections}"
+  else
+    echo "  No custom profiles found."
+  fi
+}
+
+: '
+CDD SECTION 4: LOGGING [edge]
+SPEC:
+  PRE: project_root resolved; message string provided; CONFIG_* and flags set by config_parse/interactive_create_xsay.
+  IO:
+    in: project_root; message; voice_profile (optional, default: "default")
+    out: append to log file; warnings on failure
+  BEHAVIOR:
+    - If CONFIG_LOGGING_ENABLED=false, do nothing (no warnings).
+    - If PROJECT_ROOT_IS_HOME=true, warn and skip logging.
+    - If NON_INTERACTIVE_MISSING_CONFIG=true, warn once per run and skip logging.
+    - Otherwise, determine log_dir:
+        * if CONFIG_LOG_SUBDIR empty: project_root/DEFAULT_LOG_SUBDIR
+        * if CONFIG_LOG_SUBDIR absolute: CONFIG_LOG_SUBDIR
+        * if CONFIG_LOG_SUBDIR relative: project_root/CONFIG_LOG_SUBDIR
+      Use xlog_MMM_dd_YYYY.yaml under log_dir; ensure "entries:" header; append YAML entry with voice field.
+  SUCCESS: entry appended.
+  FAILURE: on mkdir/write errors, emit warning and continue.
+  INVAR: rotate by local calendar day (one log file per day per project).
+API:
+  log_message_yaml(project_root, message, [voice_profile])
+DOCSTRING CONTRACT:
+  PRE: project_root writable; message non-empty.
+  POST: log file exists with appended entry or warning emitted; logging respects CONFIG_LOGGING_ENABLED and flags.
+'
+log_message_yaml() {
+  local project_root="$1"
+  local message="$2"
+  local voice_profile="${3:-default}"
+
+  if [ "${CONFIG_LOGGING_ENABLED}" != "true" ]; then
+    return 0
+  fi
+
+  if [ "${PROJECT_ROOT_IS_HOME}" = "true" ]; then
+    echo "Warning: project_root resolves to HOME; skipping xsay logging." >&2
+    return 0
+  fi
+
+  if [ "${NON_INTERACTIVE_MISSING_CONFIG}" = "true" ]; then
+    echo "Warning: logging disabled for this run: .xsay config not found and no TTY available." >&2
+    return 0
+  fi
+
+  local log_dir
+  if [ -n "${CONFIG_LOG_SUBDIR}" ]; then
+    case "${CONFIG_LOG_SUBDIR}" in
+      /*)
+        log_dir="${CONFIG_LOG_SUBDIR}"
+        ;;
+      *)
+        log_dir="${project_root}/${CONFIG_LOG_SUBDIR}"
+        ;;
+    esac
+  else
+    log_dir="${project_root}/${DEFAULT_LOG_SUBDIR}"
+  fi
+
+  case "${log_dir}" in
+    "${project_root}/${DEFAULT_LOG_SUBDIR}"*)
+      ;;
+    *)
+      echo "Warning: xsay logging using custom directory '${log_dir}' (outside default loom/xsay)." >&2
+      ;;
+  esac
+
+  local date_suffix
+  date_suffix="$(date "+%b_%d_%Y")"
+  local log_file="${log_dir}/xlog_${date_suffix}.yaml"
+
+  if ! mkdir -p "${log_dir}" 2>/dev/null; then
+    echo "Warning: Could not create log directory at ${log_dir}" >&2
+    return 0
+  fi
+
+  if [ ! -s "${log_file}" ]; then
+    {
+      echo "entries:"
+    } >> "${log_file}" 2>/dev/null || {
+      echo "Warning: Could not initialize log file at ${log_file}" >&2
+      return 0
+    }
+  fi
+
+  local timestamp
+  timestamp="$(date "+%H:%M:%S")"
+  local tty_path
+  tty_path="$(tty 2>/dev/null || echo "unknown")"
+
+  local safe_message="${message//\"/\\\"}"
+
+  {
+    printf "  - time: \"%s\"\n" "${timestamp}"
+    printf "    pid: \"%s\"\n" "$$"
+    printf "    voice: \"%s\"\n" "${voice_profile}"
+    printf "    tty: \"%s\"\n" "${tty_path}"
+    printf "    source_dir: \"%s\"\n" "$(pwd)"
+    printf "    message: \"%s\"\n" "${safe_message}"
+  } >> "${log_file}" 2>/dev/null || {
+    echo "Warning: Failed to append to log file at ${log_file}" >&2
+    return 0
+  }
+}
+
+: '
+CDD SECTION 5: FIFO_PRODUCER [edge]
+SPEC:
+  PRE: voice, rate, volume, pitch, and message strings provided; CONFIG_* available.
+  IO:
+    in: voice; rate; volume; pitch; message
+    out: side-effect TTS via FIFO consumer; warnings on stderr
+  BEHAVIOR:
+    - If `say` absent, warn and return 0 (logging-only mode).
+    - Call ensure_consumer to guarantee consumer process is running.
+    - Format protocol line as "voice|rate|volume|pitch|message [[slnc 500]]" and append to FIFO.
+    - On FIFO write failure, warn and return 0.
+  SUCCESS: protocol line written to FIFO; consumer will speak it.
+  FAILURE: missing `say`, FIFO write error; warnings only; never nonzero exit.
+  INVAR: never cause nonzero exit from main due to TTS issues; 500ms silent buffer appended for macOS.
+API:
+  write_to_fifo(voice, rate, volume, pitch, message)
+DOCSTRING CONTRACT:
+  PRE: voice, rate, volume, pitch are non-empty strings; message non-empty.
+  POST: best-effort TTS attempted via FIFO; failures only produce warnings.
+'
+write_to_fifo() {
+  local voice="$1"
+  local rate="$2"
+  local volume="$3"
+  local pitch="$4"
+  local message="$5"
+
+  if ! command -v say >/dev/null 2>&1; then
+    echo "Warning: 'say' command not found; logging only" >&2
+    return 0
+  fi
+
+  ensure_consumer
+
+  local expanded
+  expanded="$(expand_pauses "${message}")"
+  expanded="$(expand_soundfx "${expanded}")"
+
+  # Replace double-quotes with 200ms pause — emphasis cue instead of vocalizing "quotation mark"
+  expanded="${expanded//\"/ [[slnc 200]] }"
+
+  local fifo_line="${voice}|${rate}|${volume}|${pitch}|${expanded} [[slnc 500]]"
+
+  if ! printf '%s\n' "${fifo_line}" >> "${FIFO_PATH}" 2>/dev/null; then
+    echo "Warning: FIFO write failed; TTS skipped for this message" >&2
+    return 0
+  fi
+}
+
+: '
+CDD SECTION 5b: PAUSE_EXPANSION [pure]
+SPEC:
+  PRE: message string provided.
+  IO:
+    in: message (string potentially containing {N} pause tokens)
+    out: message with {N} tokens replaced by [[slnc N]] embedded commands.
+  BEHAVIOR:
+    - Scan for {N} where N is integer (tenths of a second).
+    - Convert N tenths to milliseconds (N * 100) for macOS say [[slnc N]].
+    - Replace each {N} token with [[slnc Nms]] inline.
+    - Non-matching braces pass through unchanged.
+  SUCCESS: all {N} tokens expanded to [[slnc N]].
+  FAILURE: none (no tokens = no change).
+  INVAR: only matches {digits} pattern; no side effects.
+API:
+  expand_pauses(message) -> echoes expanded message
+DOCSTRING CONTRACT:
+  PRE: message is a string.
+  POST: all {N} tokens replaced; non-matching text unchanged.
+  UNIT: N = tenths of a second (e.g., {5} = 500ms, {10} = 1s, {20} = 2s).
+'
+expand_pauses() {
+  local msg="$1"
+  while [[ "${msg}" =~ \{([0-9]+)\} ]]; do
+    local full_match="${BASH_REMATCH[0]}"
+    local tenths="${BASH_REMATCH[1]}"
+    local ms=$(( tenths * 100 ))
+    msg="${msg/"${full_match}"/"[[slnc ${ms}]]"}"
+  done
+  printf '%s' "${msg}"
+}
+
+: '
+CDD SECTION 5b continued: SOUNDFX_EXPANSION [pure-ish]
+SPEC:
+  PRE: message string provided; SOUNDFX_DIR global set.
+  IO:
+    in: message (string potentially containing {name} sound effect tokens)
+    out: message with {name} tokens replaced by [[sfx:name]] markers (when matching .aiff exists).
+  BEHAVIOR:
+    - Scan for {name} where name is lowercase alpha + underscore ([a-z_]+).
+    - For each match, check if ${SOUNDFX_DIR}/${name}.aiff exists.
+    - Exists → replace {name} with [[sfx:name]] inline marker.
+    - Missing → leave {name} as literal text (no expansion).
+    - Non-matching braces pass through unchanged.
+  SUCCESS: all matching {name} tokens expanded to [[sfx:name]].
+  FAILURE: none (no tokens or no files = no change).
+  INVAR: only matches {alpha_underscore} pattern; digits pattern handled by expand_pauses.
+  NOTE: pure-ish — reads filesystem for file existence check only.
+API:
+  expand_soundfx(message) -> echoes expanded message
+DOCSTRING CONTRACT:
+  PRE: message is a string; SOUNDFX_DIR points to directory (may not exist).
+  POST: matching {name} tokens replaced; non-matching text unchanged.
+'
+expand_soundfx() {
+  local msg="$1"
+
+  # Early exit: no SOUNDFX_DIR or no {alpha} tokens
+  if [ ! -d "${SOUNDFX_DIR}" ]; then
+    printf '%s' "${msg}"
+    return 0
+  fi
+
+  # Iterate: replace {name} with [[sfx:name]] when .aiff exists
+  # Non-matching tokens get placeholder to avoid infinite loop
+  while [[ "${msg}" =~ \{([a-z_]+)\} ]]; do
+    local full_match="${BASH_REMATCH[0]}"
+    local sfx_name="${BASH_REMATCH[1]}"
+    local sfx_file="${SOUNDFX_DIR}/${sfx_name}.aiff"
+    if [ -f "${sfx_file}" ]; then
+      msg="${msg/"${full_match}"/"[[sfx:${sfx_name}]]"}"
+    else
+      # No matching file — placeholder to skip and avoid infinite loop
+      msg="${msg/"${full_match}"/"__NOSFX_${sfx_name}__"}"
+    fi
+  done
+
+  # Restore non-sfx tokens to original {name} form
+  while [[ "${msg}" =~ __NOSFX_([a-z_]+)__ ]]; do
+    local placeholder="${BASH_REMATCH[0]}"
+    local original_name="${BASH_REMATCH[1]}"
+    msg="${msg/"${placeholder}"/"{${original_name}}"}"
+  done
+
+  printf '%s' "${msg}"
+}
+
+: '
+CDD SECTION 5a: CONSUMER_MGMT [edge]
+SPEC:
+  PRE: FIFO_PATH and PID_FILE globals set; BASH_SOURCE[0] points to this script.
+  IO:
+    in: none (ensure_consumer); reads FIFO lines (consumer_loop)
+    out: spawns background consumer process; speaks TTS; manages PID and FIFO lifecycle.
+
+ensure_consumer():
+  BEHAVIOR:
+    - Create FIFO at FIFO_PATH with mkfifo if absent; warn on failure and return 0.
+    - If PID_FILE exists and the recorded PID is alive (kill -0), return 0 immediately.
+    - Double-fork spawn of this script with --consumer flag; sleep 0.05 for cold start.
+  SUCCESS: consumer process running.
+  FAILURE: mkfifo or spawn failure; warn and return 0.
+  INVAR: idempotent; at most one consumer per FIFO_PATH.
+
+consumer_loop():
+  BEHAVIOR:
+    - Write own PID to PID_FILE.
+    - Open FIFO read+write on fd 3 (keeps pipe open even when no producer).
+    - Read lines with 30s timeout; on timeout break and exit cleanly.
+    - Skip empty lines.
+    - Parse "voice|rate|vol|pitch|message" protocol (5-field) or "voice|rate|message" (3-field compat); invoke `say -v voice -r rate "[[volm vol]][[pbas pitch]]message"`.
+    - On exit: close fd 3, remove PID_FILE, exit 0.
+  SUCCESS: speaks all queued messages; exits after 30s idle.
+  FAILURE: `say` errors suppressed with || true.
+  INVAR: never blocks producers beyond FIFO kernel buffer; exits cleanly on timeout.
+
+API:
+  ensure_consumer()
+  consumer_loop()
+DOCSTRING CONTRACT:
+  PRE: BASH_SOURCE[0] is the script path; FIFO_PATH and PID_FILE are writable /tmp paths.
+  POST: consumer running after ensure_consumer; FIFO and PID_FILE cleaned up after consumer_loop exits.
+'
+ensure_consumer() {
+  if [ ! -p "${FIFO_PATH}" ]; then
+    if ! mkfifo "${FIFO_PATH}" 2>/dev/null; then
+      echo "Warning: Could not create FIFO at '${FIFO_PATH}'; TTS may be unavailable." >&2
+      return 0
+    fi
+  fi
+
+  if [ -f "${PID_FILE}" ]; then
+    local existing_pid
+    existing_pid="$(cat "${PID_FILE}" 2>/dev/null || echo "")"
+    if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  # Double-fork to fully detach consumer from calling process
+  ( ( exec "${BASH_SOURCE[0]}" --consumer >/dev/null 2>&1 ) & ) &
+
+  # Brief pause to allow consumer cold start before first write
+  sleep 0.05
+}
+
+consumer_loop() {
+  echo "$$" > "${PID_FILE}"
+
+  # Open FIFO for both read and write; keeps pipe alive with no producers
+  exec 3<>"${FIFO_PATH}"
+
+  while true; do
+    local line
+    if ! IFS= read -t 30 -r line <&3; then
+      break
+    fi
+
+    # Skip empty lines
+    if [ -z "${line}" ]; then
+      continue
+    fi
+
+    # Parse protocol: backward-compat detection via pipe count
+    # v3 5-field: voice|rate|volume|pitch|message
+    # v2 3-field: voice|rate|message (default vol=1.0, pitch=45)
+    local pipe_count="${line//[^|]/}"
+    local voice rate vol pitch message
+
+    if [ "${#pipe_count}" -ge 4 ]; then
+      # 5-field protocol
+      voice="${line%%|*}"
+      local r1="${line#*|}"
+      rate="${r1%%|*}"
+      local r2="${r1#*|}"
+      vol="${r2%%|*}"
+      local r3="${r2#*|}"
+      pitch="${r3%%|*}"
+      message="${r3#*|}"
+    else
+      # 3-field protocol (v2 compat)
+      voice="${line%%|*}"
+      local remainder="${line#*|}"
+      rate="${remainder%%|*}"
+      message="${remainder#*|}"
+      vol="1.0"
+      pitch="45"
+    fi
+
+    # Replace double-quotes with 200ms pause (defense-in-depth)
+    # Emphasis cue instead of vocalizing "quotation mark"
+    message="${message//\"/ [[slnc 200]] }"
+
+    # ── SFX interleave engine ──────────────────────────────────────
+    # If message contains [[sfx:name]] markers, split into segments
+    # and alternate say (text) / afplay (audio) calls sequentially.
+    # Non-sfx messages take the fast path (single say call).
+    if [[ "${message}" == *'[[sfx:'* ]]; then
+      local say_prefix="[[volm ${vol}]][[pbas ${pitch}]]"
+      local remaining="${message}"
+
+      while [[ "${remaining}" == *'[[sfx:'* ]]; do
+        # Extract text before the sfx marker
+        local before="${remaining%%\[\[sfx:*}"
+        local after="${remaining#*\[\[sfx:}"
+        local sfx_name="${after%%\]\]*}"
+        remaining="${after#*]]}"
+
+        # Speak text before sfx (skip if empty/whitespace-only)
+        local trimmed="${before#"${before%%[![:space:]]*}"}"
+        if [ -n "${trimmed}" ]; then
+          say -v "${voice}" -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
+        fi
+
+        # Play sound effect with profile volume
+        local sfx_file="${SOUNDFX_DIR}/${sfx_name}.aiff"
+        if [ -f "${sfx_file}" ]; then
+          afplay -v "${vol}" "${sfx_file}" 2>/dev/null || true
+        fi
+      done
+
+      # Speak remaining text after last sfx (skip if empty/whitespace-only)
+      local trimmed="${remaining#"${remaining%%[![:space:]]*}"}"
+      if [ -n "${trimmed}" ]; then
+        say -v "${voice}" -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
+      fi
+    else
+      # ── Standard path (no sfx markers) ────────────────────────────
+      say -v "${voice}" -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
+    fi
+  done
+
+  exec 3>&-
+  rm -f "${PID_FILE}"
+  exit 0
+}
+
+: '
+CDD SECTION 5b: REPO_CONTEXT [pure/edge]
+SPEC:
+  PRE: git available (or not); GIT_* globals set to empty strings initially.
+  IO:
+    in: current working directory (implicit via git commands)
+    out: GIT_* globals populated; LAST_REPO_FILE read/written for change detection.
+
+git_context_info():
+  BEHAVIOR:
+    - Reset all GIT_* globals to empty.
+    - If `git` not in PATH, return 1.
+    - Resolve repo toplevel via git rev-parse; return 1 on failure (not a git repo).
+    - Set GIT_REPO_NAME (basename of toplevel), GIT_BRANCH (current branch),
+      GIT_COMMIT_SUBJECT (last commit subject), GIT_COMMIT_RELTIME (relative time).
+    - Return 0 on success.
+  SUCCESS: GIT_* globals reflect current repo state.
+  FAILURE: returns 1 when git absent or not in a repo.
+  INVAR: no filesystem writes; GIT_* always reset at start.
+
+should_announce_repo():
+  BEHAVIOR:
+    - If REPO_ENABLED=false, return 1 (repo context disabled for this project).
+    - If GIT_REPO_NAME is empty, return 1.
+    - Read LAST_REPO_FILE; compare stored name with GIT_REPO_NAME.
+    - Different or absent → write GIT_REPO_NAME to LAST_REPO_FILE, return 0.
+    - Same name → check file mtime against REPO_STALE_MINUTES:
+      * If file older than stale_minutes → return 0 (re-announce, update mtime).
+      * If stale_minutes=0 → always re-announce.
+      * If stale_minutes=-1 → never re-announce same repo.
+      * Otherwise → return 1 (no announcement needed).
+  SUCCESS: returns 0 when repo context should be announced.
+  FAILURE: returns 1 when announcement suppressed.
+  INVAR: LAST_REPO_FILE write failure is silently ignored (best-effort).
+
+API:
+  git_context_info() -> return 0 on success, 1 on failure; populates GIT_* globals
+  should_announce_repo() -> return 0 if repo changed, 1 otherwise
+DOCSTRING CONTRACT:
+  PRE: GIT_* globals declared; LAST_REPO_FILE is a writable /tmp path.
+  POST: GIT_* populated on success; LAST_REPO_FILE updated when repo changes.
+'
+git_context_info() {
+  GIT_REPO_NAME=""
+  GIT_BRANCH=""
+  GIT_COMMIT_SUBJECT=""
+  GIT_COMMIT_RELTIME=""
+
+  if ! command -v git >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local repo_path
+  repo_path="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+
+  GIT_REPO_NAME="$(basename "${repo_path}")"
+  GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+  GIT_COMMIT_SUBJECT="$(git log -1 --format='%s' 2>/dev/null || echo "")"
+  GIT_COMMIT_RELTIME="$(git log -1 --format='%cr' 2>/dev/null || echo "")"
+
+  return 0
+}
+
+should_announce_repo() {
+  if [ "${REPO_ENABLED}" = "false" ]; then
+    return 1
+  fi
+
+  if [ -z "${GIT_REPO_NAME}" ]; then
+    return 1
+  fi
+
+  local last_repo=""
+  if [ -f "${LAST_REPO_FILE}" ]; then
+    last_repo="$(cat "${LAST_REPO_FILE}" 2>/dev/null || echo "")"
+  fi
+
+  # Different repo or first run → always announce
+  if [ "${last_repo}" != "${GIT_REPO_NAME}" ]; then
+    printf '%s\n' "${GIT_REPO_NAME}" > "${LAST_REPO_FILE}" 2>/dev/null || true
+    return 0
+  fi
+
+  # Same repo — check staleness
+  local stale="${REPO_STALE_MINUTES}"
+
+  # -1 = never re-announce same repo
+  if [ "${stale}" = "-1" ]; then
+    return 1
+  fi
+
+  # 0 = always re-announce
+  if [ "${stale}" = "0" ]; then
+    touch "${LAST_REPO_FILE}" 2>/dev/null || true
+    return 0
+  fi
+
+  # Check file age via stat (macOS: -f %m for epoch seconds)
+  local file_mtime now age_seconds stale_seconds
+  file_mtime="$(stat -f %m "${LAST_REPO_FILE}" 2>/dev/null || echo "0")"
+  now="$(date +%s)"
+  age_seconds=$(( now - file_mtime ))
+  stale_seconds=$(( stale * 60 ))
+
+  if [ "${age_seconds}" -ge "${stale_seconds}" ]; then
+    # Stale — re-announce and refresh timestamp
+    touch "${LAST_REPO_FILE}" 2>/dev/null || true
+    return 0
+  fi
+
+  return 1
+}
+
+: '
+CDD SECTION 5c: HELP [pure]
+SPEC:
+  PRE: project_root resolved; CONFIG_* set by config_parse.
+  IO:
+    in: project_root
+    out: formatted help text to stdout.
+  BEHAVIOR:
+    show_help: concise CLI reference for humans.
+    show_context: LLM-optimized markdown spec for AI agents.
+    show_config_info: deep-dive with file paths, architecture, setup details.
+  SUCCESS: help printed.
+  FAILURE: none.
+  INVAR: read-only; no side effects.
+API:
+  show_help(project_root)
+  show_context(project_root)
+  show_config_info(project_root)
+DOCSTRING CONTRACT:
+  PRE: project_root resolved.
+  POST: help text on stdout.
+'
+: '
+CDD SECTION 5c: SOUNDS_LISTING [pure-ish]
+SPEC:
+  PRE: SOUNDFX_DIR global set.
+  IO:
+    in: optional sound name to preview
+    out: stdout listing of available sound effects; optional afplay preview.
+  BEHAVIOR:
+    - List all .aiff files in SOUNDFX_DIR (sans extension) with {name} token syntax.
+    - If a name arg is provided and matching .aiff exists, play it via afplay.
+  SUCCESS: lists sounds; plays preview if requested.
+  FAILURE: SOUNDFX_DIR missing → prints message.
+API:
+  list_sounds(preview_name?) -> stdout listing, optional audio
+DOCSTRING CONTRACT:
+  PRE: SOUNDFX_DIR points to directory (may not exist).
+  POST: available sounds printed; preview played if file exists.
+'
+list_sounds() {
+  local preview_name="${1:-}"
+
+  if [ ! -d "${SOUNDFX_DIR}" ]; then
+    echo "Sound effects directory not found: ${SOUNDFX_DIR}" >&2
+    exit 1
+  fi
+
+  # Preview mode: play a specific sound
+  if [ -n "${preview_name}" ]; then
+    local sfx_file="${SOUNDFX_DIR}/${preview_name}.aiff"
+    if [ -f "${sfx_file}" ]; then
+      echo "Playing: {${preview_name}}"
+      afplay "${sfx_file}" 2>/dev/null || echo "Warning: afplay failed" >&2
+    else
+      echo "Error: Sound '${preview_name}' not found in ${SOUNDFX_DIR}" >&2
+      echo "Run 'xsay --sounds' to see available sounds." >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  # List mode: show all available sounds
+  local count=0
+  echo "xsay — Available Sound Effects"
+  echo ""
+  echo "  Use {name} tokens in messages to play inline sounds."
+  echo "  Preview: xsay --sounds <name>"
+  echo ""
+
+  for f in "${SOUNDFX_DIR}"/*.aiff; do
+    [ -f "${f}" ] || continue
+    local name
+    name="$(basename "${f}" .aiff)"
+    printf "  {%-12s}  %s\n" "${name}" "${f}"
+    count=$((count + 1))
+  done
+
+  echo ""
+  echo "  ${count} sounds available"
+}
+
+show_help() {
+  local project_root="$1"
+  local config_file="${project_root}/.xsay"
+  local config_status="not found"
+  if [ -f "${config_file}" ]; then
+    config_status="found"
+  fi
+
+  cat <<EOF
+xsay v3.1 — project-aware text-to-speech with voice-name profiles
+
+USAGE
+  xsay "message"                speak with default voice (Zoe)
+  xsay "Hello {10} world"       speak with 1-second pause
+  xsay "{ping} task done"       play ping sound, then speak
+  xsay ava: message              speak with named profile
+  xsay -v evan message           speak with profile by section name
+
+OPTIONS
+  -l, --list-voices             list available voice profiles
+  --sounds [name]               list sound effects (or preview one)
+  --update                      sync built-in profiles from master config
+  --config                      show paths, architecture, setup details
+  --context                     print LLM-optimized spec (for AI agents)
+  -h, --help                    show this help
+
+CONFIG
+  Project:  ${config_file}  [${config_status}]
+  Master:   ${MASTER_CONFIG_FILE}
+
+PAUSE TOKENS
+  {N} in message text inserts a pause (N = tenths of a second)
+  Examples: {5} = 500ms, {10} = 1s, {20} = 2s
+
+SOUND EFFECTS
+  {name} in message text plays a sound from soundfx/ directory
+  Examples: {ping}, {hero}, {glass}
+  Only triggers when matching .aiff file exists; unknown names pass through.
+  Run: xsay --sounds  to list all available effects.
+
+PROFILES
+  ava, lee, evan, nathan, allison, nicky, samantha, tom
+  Legacy aliases: narrate→ava, announce→lee, instructor→evan,
+                  student→ava, repo→nathan
+EOF
+}
+
+show_context() {
+  local project_root="$1"
+  local config_file="${project_root}/.xsay"
+
+  cat <<'CTXEOF'
+# xsay v3.1 — Project-Aware TTS CLI
+
+Text-to-speech with voice-name profiles, volume/pitch controls, inline sound effects, async FIFO queue, and git repo context. macOS only (`say` command).
+
+## Usage
+
+```
+xsay "message"                 # default voice (Zoe Premium)
+xsay "Hello {10} world"       # 1-second inline pause ({N} = tenths of a second)
+xsay "{ping} task done"       # play ping sound, then speak
+xsay ava: message              # flag shorthand → [ava] profile
+xsay -v evan message           # explicit profile by section name
+xsay -l                        # list profiles with vol/pitch
+xsay --sounds                  # list available sound effects
+xsay --update                  # sync built-in profiles from master
+xsay --config                  # paths, architecture, internals
+xsay --context                 # this output
+```
+
+## Flags
+
+| Flag | Action |
+|------|--------|
+| `-v NAME` | Select voice profile by [section] name |
+| `-l` | List all profiles with voice/rate/vol/pitch/flags |
+| `--sounds [name]` | List sound effects or preview one by name |
+| `--update` | Sync built-in profiles from master, preserve custom |
+| `--config` | Show paths, architecture, config status |
+| `--context` | Print this LLM spec |
+| `-h, --help` | Human-readable help |
+| `flag:` | Shorthand — matches `flag=` key in [section] blocks (comma-separated) |
+
+## Pause Tokens
+
+`{N}` in message → `[[slnc N*100ms]]` for macOS `say`. N = tenths of a second.
+- `{5}` → 500ms silence
+- `{10}` → 1s silence
+- `{20}` → 2s silence
+
+## Sound Effects
+
+`{name}` in message → plays matching `.aiff` from `soundfx/` directory inline.
+- Only expands when `soundfx/{name}.aiff` exists; unknown names pass through as literal text.
+- Producer converts `{name}` → `[[sfx:name]]` marker; consumer interleaves `say`/`afplay`.
+- `afplay -v` uses the profile's `volume=` setting for consistent loudness.
+- Available: basso, blow, bottle, frog, funk, glass, hero, morse, ping, pop, purr, sosumi, submarine, tink
+- Mixed tokens work: `{ping} Hello {10} world {hero}` → ping, speech, 1s pause, speech, hero
+
+## Config Format (.xsay)
+
+INI-style at project root. Auto-created from master config.
+
+- **Top-level keys** (before any [section]): `voice`, `rate`, `volume`, `pitch`, `logging_enabled`, `log_subdir`
+- **[section]** blocks: override `voice`, `rate`, `volume`, `pitch`; add `flag=` for shorthand (comma-separated)
+- **[nathan]** special keys: `stale_minutes`, `enabled`, `template` (placeholders: `{repo}`, `{branch}`, `{commit}`, `{time}`)
+- `--update` syncs built-in sections from master; custom [sections] preserved
+
+## Built-in Profiles
+
+| Profile | Voice | Rate | Vol | Pitch | Flags |
+|---------|-------|------|-----|-------|-------|
+| default | Zoe (Premium) | 180 | 1.0 | 45 | — |
+| ava | Ava (Premium) | 175 | 1.0 | 45 | ava,narrate,student |
+| lee | Lee (Premium) | 200 | 1.0 | 45 | lee,announce |
+| evan | Evan (Enhanced) | 175 | 1.0 | 45 | evan,instructor |
+| nathan | Nathan (Enhanced) | 190 | 0.9 | 45 | nathan,repo |
+| allison | Allison (Enhanced) | 180 | 1.0 | 45 | allison |
+| nicky | Nicky (Enhanced) | 190 | 1.0 | 45 | nicky |
+| samantha | Samantha (Enhanced) | 185 | 1.0 | 45 | samantha |
+| tom | Tom (Enhanced) | 185 | 1.0 | 45 | tom |
+
+## Architecture
+
+Async FIFO queue at `/tmp/xsay.fifo`. Producer writes `voice|rate|vol|pitch|message [[slnc 500]]` and returns in ~2ms. Background consumer reads FIFO, applies `[[volm vol]][[pbas pitch]]` prefix, calls `say`, exits after 30s idle. Double-fork spawn, PID tracked at `/tmp/xsay.pid`. Backward-compatible: consumer detects 3-field (v2) vs 5-field (v3) protocol lines. When `[[sfx:name]]` markers are present, consumer interleaves `say` (text) and `afplay` (audio) calls sequentially.
+
+## Paths
+CTXEOF
+
+  cat <<CTXEOF2
+- Binary: $(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+- Project config: ${config_file}
+- Master config: ${MASTER_CONFIG_FILE}
+- FIFO: ${FIFO_PATH}
+- Logs: {project_root}/${CONFIG_LOG_SUBDIR}/xlog_MMM_dd_YYYY.yaml
+CTXEOF2
+}
+
+show_config_info() {
+  local project_root="$1"
+  local config_file="${project_root}/.xsay"
+  local self_path
+  self_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  local self_lines
+  self_lines="$(wc -l < "${self_path}" 2>/dev/null | tr -d ' ')"
+  local spec_path="${XSAY_INSTALL_PREFIX}/share/xsay/xsay_SPEC.yaml"
+
+  # Pre-compute sfx count
+  local sfx_count="0"
+  if [ -d "${SOUNDFX_DIR}" ]; then
+    sfx_count="$(find "${SOUNDFX_DIR}" -name '*.aiff' 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+
+  # Pre-compute status strings for clean heredoc
+  local master_status project_status consumer_status
+  if [ -f "${MASTER_CONFIG_FILE}" ]; then
+    master_status="found ($(wc -l < "${MASTER_CONFIG_FILE}" | tr -d ' ') lines)"
+  else
+    master_status="not found"
+  fi
+  if [ -f "${config_file}" ]; then
+    project_status="found ($(wc -l < "${config_file}" | tr -d ' ') lines)"
+  else
+    project_status="not found"
+  fi
+  if [ -f "${PID_FILE}" ]; then
+    local cpid
+    cpid="$(cat "${PID_FILE}" 2>/dev/null || echo "")"
+    if [ -n "${cpid}" ] && kill -0 "${cpid}" 2>/dev/null; then
+      consumer_status="running (PID ${cpid})"
+    else
+      consumer_status="stale PID file (${cpid})"
+    fi
+  else
+    consumer_status="not running"
+  fi
+
+  cat <<EOF
+xsay --config: paths, architecture, and setup details
+
+PATHS
+  Binary:       ${self_path} (${self_lines} lines)
+  Spec:         ${spec_path}
+  Master:       ${MASTER_CONFIG_FILE}
+  Project:      ${config_file}
+  Sound FX:     ${SOUNDFX_DIR}/ (${sfx_count} sounds)
+  FIFO:         ${FIFO_PATH}
+  PID file:     ${PID_FILE}
+  Last repo:    ${LAST_REPO_FILE}
+
+CONFIG STATUS
+  Master:       ${master_status}
+  Project:      ${project_status}
+  Consumer:     ${consumer_status}
+
+ARCHITECTURE
+  TTS runs asynchronously via a FIFO queue (${FIFO_PATH}).
+  Messages return instantly; a background consumer plays them
+  in order, then self-terminates after 30s of silence.
+
+  Flow: xsay "msg" → write_to_fifo → FIFO → consumer_loop → say
+  Protocol: "voice|rate|volume|pitch|message [[slnc 500]]" (5-field, pipe-delimited)
+  Consumer applies [[volm V]][[pbas P]] prefix before calling say.
+  Backward-compatible: consumer also handles v2 3-field lines.
+
+  On first call, ensure_consumer() double-forks a background process
+  that reads from the FIFO. The consumer writes its PID to ${PID_FILE}.
+  Subsequent calls check PID liveness before spawning.
+
+REPO CONTEXT
+  When you switch git repos, xsay announces the new repository
+  context (name, branch, last commit) using the [nathan] voice profile.
+
+  The [nathan] section in .xsay controls per-project announcements:
+    stale_minutes=5    re-announce after N min idle (0=always, -1=never)
+    enabled=true       false to disable announcements for this project
+    template=...       placeholders: {repo}, {branch}, {commit}, {time}
+
+  Change detection: ${LAST_REPO_FILE} stores the last-announced repo.
+  Staleness: file mtime compared against stale_minutes (macOS stat -f %m).
+
+PROFILE SYSTEM
+  Built-in profiles synced from master: ava, lee, evan, nathan,
+  allison, nicky, samantha, tom. Custom profiles preserved by --update.
+
+  Voice-name profiles: section names match the voice (e.g., [ava] = Ava).
+  Comma-separated flags: flag=ava,narrate,student (all resolve to [ava]).
+  Legacy aliases: narrate→ava, announce→lee, instructor→evan, student→ava, repo→nathan.
+  Explicit: -v ava "message" selects by section name directly.
+
+  Voices: Ava (Premium), Allison (Enhanced), Evan (Enhanced), Lee (Premium),
+          Nathan (Enhanced), Nicky (Enhanced), Samantha (Enhanced),
+          Tom (Enhanced), Zoe (Premium)
+  See all voices: say -v '?'
+
+VOLUME & PITCH
+  volume=0.0-1.0    controls output volume via [[volm V]]
+  pitch=0-127       controls pitch baseline via [[pbas P]]
+  Default: volume=1.0, pitch=45
+
+LOGGING
+  When logging_enabled=true, xsay appends YAML entries to:
+    {project_root}/{log_subdir}/xlog_MMM_dd_YYYY.yaml
+  Each entry: time, pid, voice profile, tty, source_dir, message.
+  Logging is silently skipped when disabled or at HOME.
+
+MASTER CONFIG
+  Location: ${MASTER_CONFIG_FILE}
+  Created automatically on first run if absent.
+  Idempotent: existing master is never overwritten.
+  New projects get a copy of master as their .xsay.
+  Edit master to change defaults for all future projects.
+  Run xsay --update in existing projects to sync built-in profiles.
+
+EOF
+
+  if [ -f "${config_file}" ]; then
+    echo "CURRENT PROFILES"
+    list_profiles "${project_root}"
+  fi
+}
+
+: '
+CDD SECTION 6: MAIN FLOW (ORCHESTRATION) [orch]
+SPEC:
+  PRE: CLI args provided.
+  IO:
+    in: argv[1..] → flags and/or message
+    out: stdout confirmation; warnings on stderr; optional logging and TTS side effects.
+  BEHAVIOR:
+    - If first arg is "--consumer", run consumer_loop and exit.
+    - Parse CLI flags: -v NAME (voice profile), -l (list profiles), --update (sync from master).
+    - Resolve project_root via root_detection.
+    - Call ensure_master_config then interactive_create_xsay to optionally create .xsay.
+    - Detect colon-suffix flag shorthand: if $1 matches "word:" and word is a known flag, use that profile.
+    - Parse .xsay via config_parse with resolved profile.
+    - If -l mode, list profiles and exit.
+    - Validate profile exists (if non-default).
+    - Log via log_message_yaml respecting config and flags.
+    - Announce repo context via git_context_info/should_announce_repo when repo changes.
+    - Invoke TTS via write_to_fifo (repo announcement + main message).
+    - Print confirmation "xsay: [profile] Sent: <message>" and exit 0.
+  SUCCESS: message logged (when enabled) and spoken (when possible).
+  FAILURE: invalid input or unknown profile leads to nonzero exit.
+  INVAR: never write outside configured logging path; never block due to logging/TTS failures.
+API:
+  main("$@")
+DOCSTRING CONTRACT:
+  PRE: invoked as a CLI program with args.
+  POST: exits 0 on normal use; nonzero only on bad input or unknown profile.
+'
+main() {
+  if [ "${1:-}" = "--consumer" ]; then
+    consumer_loop
+    exit 0
+  fi
+
+  local voice_profile="default"
+  local list_mode="false"
+  local help_mode="false"
+  local update_mode="false"
+  local config_mode="false"
+  local context_mode="false"
+  local sounds_mode="false"
+
+  # Parse standard CLI flags
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        help_mode="true"
+        shift
+        ;;
+      -v|--voice)
+        if [ -z "${2:-}" ]; then
+          echo "Error: -v requires a profile name" >&2
+          exit 1
+        fi
+        voice_profile="$2"
+        shift 2
+        ;;
+      -l|--list-voices)
+        list_mode="true"
+        shift
+        ;;
+      --update)
+        update_mode="true"
+        shift
+        ;;
+      --config)
+        config_mode="true"
+        shift
+        ;;
+      --context)
+        context_mode="true"
+        shift
+        ;;
+      --sounds)
+        sounds_mode="true"
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Error: Unknown option: $1" >&2
+        echo "Usage: xsay [flag:] \"message\"  or  xsay [-v profile] [-l] [--update] \"message\"" >&2
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  NON_INTERACTIVE_MISSING_CONFIG="false"
+  PROJECT_ROOT_IS_HOME="false"
+
+  # Resolve project root (needed before flag lookup)
+  local project_root
+  project_root="$(root_detection)"
+
+  local home="${HOME:-}"
+  if [ -n "${home}" ] && [ "${project_root}" = "${home}" ]; then
+    PROJECT_ROOT_IS_HOME="true"
+  fi
+
+  ensure_master_config
+  interactive_create_xsay "${project_root}"
+  if [ -n "${XSAY_RESOLVED_ROOT}" ]; then
+    project_root="${XSAY_RESOLVED_ROOT}"
+  fi
+
+  # Config info mode: show paths, architecture, setup details
+  if [ "${config_mode}" = "true" ]; then
+    config_parse "${project_root}"
+    show_config_info "${project_root}"
+    exit 0
+  fi
+
+  # Context mode: LLM-optimized spec
+  if [ "${context_mode}" = "true" ]; then
+    config_parse "${project_root}"
+    show_context "${project_root}"
+    exit 0
+  fi
+
+  # Update mode: sync built-in profiles from master, preserve custom
+  if [ "${update_mode}" = "true" ]; then
+    update_project_config "${project_root}"
+    exit $?
+  fi
+
+  # Sounds mode: list/preview available sound effects
+  if [ "${sounds_mode}" = "true" ]; then
+    list_sounds "${1:-}"
+    exit 0
+  fi
+
+  # Detect colon-suffix flag shorthand: "narrate:" → look up flag
+  if [ "${voice_profile}" = "default" ] && [ "$#" -gt 0 ]; then
+    if [[ "$1" =~ ^([a-zA-Z0-9_-]+):$ ]]; then
+      local candidate_flag="${BASH_REMATCH[1]}"
+      local matched_profile
+      if matched_profile="$(resolve_flag_to_profile "${project_root}" "${candidate_flag}")"; then
+        voice_profile="${matched_profile}"
+        shift
+      fi
+      # If no match, $1 stays as part of message (no shift)
+    fi
+  fi
+
+  config_parse "${project_root}" "${voice_profile}"
+
+  # Help mode: show help and exit (also triggered by no args)
+  if [ "${help_mode}" = "true" ] || { [ "$#" -eq 0 ] && [ "${list_mode}" = "false" ]; }; then
+    show_help "${project_root}"
+    exit 0
+  fi
+
+  # List mode: show profiles and exit
+  if [ "${list_mode}" = "true" ]; then
+    list_profiles "${project_root}"
+    exit 0
+  fi
+
+  # Validate non-default profile exists
+  if [ "${voice_profile}" != "default" ] && ! profile_exists "${project_root}" "${voice_profile}"; then
+    echo "Error: Voice profile '${voice_profile}' not found in .xsay" >&2
+    echo "Run 'xsay -l' to see available profiles." >&2
+    exit 1
+  fi
+
+  local msg="$*"
+
+  log_message_yaml "${project_root}" "${msg}" "${voice_profile}"
+
+  # Repo context announcement
+  # Parse [nathan] profile first to get REPO_ENABLED/STALE_MINUTES/TEMPLATE + voice/rate/vol/pitch
+  local saved_voice="${CONFIG_VOICE}"
+  local saved_rate="${CONFIG_RATE}"
+  local saved_volume="${CONFIG_VOLUME}"
+  local saved_pitch="${CONFIG_PITCH}"
+  config_parse "${project_root}" "nathan"
+  local repo_voice="${CONFIG_VOICE}"
+  local repo_rate="${CONFIG_RATE}"
+  local repo_volume="${CONFIG_VOLUME}"
+  local repo_pitch="${CONFIG_PITCH}"
+  local repo_template="${REPO_TEMPLATE}"
+  CONFIG_VOICE="${saved_voice}"
+  CONFIG_RATE="${saved_rate}"
+  CONFIG_VOLUME="${saved_volume}"
+  CONFIG_PITCH="${saved_pitch}"
+
+  if git_context_info && should_announce_repo; then
+    # Build context message from template
+    local context_msg="${repo_template}"
+    context_msg="${context_msg//\{repo\}/${GIT_REPO_NAME}}"
+    context_msg="${context_msg//\{branch\}/${GIT_BRANCH}}"
+    context_msg="${context_msg//\{commit\}/${GIT_COMMIT_SUBJECT}}"
+    context_msg="${context_msg//\{time\}/${GIT_COMMIT_RELTIME}}"
+
+    write_to_fifo "${repo_voice}" "${repo_rate}" "${repo_volume}" "${repo_pitch}" "${context_msg}"
+  fi
+
+  write_to_fifo "${CONFIG_VOICE}" "${CONFIG_RATE}" "${CONFIG_VOLUME}" "${CONFIG_PITCH}" "${msg}"
+
+  echo "xsay: [${voice_profile}] Sent: ${msg}"
+}
+
+if [ "${BASH_SOURCE[0]:-}" = "$0" ]; then
+  main "$@"
+fi
