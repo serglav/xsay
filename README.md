@@ -15,13 +15,13 @@ xsay ava: "Switching voices is easy"
 ### Homebrew (recommended)
 
 ```bash
-brew install serglavren/xsay/xsay
+brew install serglav/xsay/xsay
 ```
 
 ### Git clone
 
 ```bash
-git clone https://github.com/serglavren/xsay.git
+git clone https://github.com/serglav/xsay.git
 cd xsay
 make install
 ```
@@ -29,7 +29,7 @@ make install
 ### curl one-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/serglavren/xsay/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/serglav/xsay/main/install.sh | bash
 ```
 
 Installs to `~/.local/bin` by default. Set `PREFIX` to change:

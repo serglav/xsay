@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local}"
-REPO_URL="https://github.com/serglavren/xsay.git"
+REPO_URL="https://github.com/serglav/xsay.git"
 
 main() {
   echo "xsay installer"
