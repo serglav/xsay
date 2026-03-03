@@ -1,5 +1,22 @@
+# macOS
 .DS_Store
-*.log
-/tmp/
+._*
+.Spotlight-V100
+.Trashes
+
+# xsay runtime artifacts
 .xsay
 loom/
+*.log
+/tmp/
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+
+# Claude Code
+.claude/
