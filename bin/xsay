@@ -1,5 +1,5 @@
 #!/bin/bash
-# xsay v3.2 — project-aware macOS TTS with voice-name profiles + inline sound effects
+# xsay v3.2.2 — project-aware macOS TTS with voice-name profiles + inline sound effects
 
 set -o errexit
 set -o nounset
@@ -508,7 +508,7 @@ ensure_master_config() {
 
   # Fallback: write minimal seed config (broken install — shipped default missing)
   {
-    echo "# xsay v3.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.2.2 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "voice=${DEFAULT_VOICE}"
     echo "rate=${DEFAULT_RATE}"
@@ -593,7 +593,7 @@ interactive_create_xsay() {
 
   # Fallback: write hardcoded seed (same content as ensure_master_config)
   {
-    echo "# xsay v3.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.2.2 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "# Keys: voice, rate (wpm), volume (0.0-1.0), pitch (0-127), flag (comma-separated triggers)"
     echo "voice=${DEFAULT_VOICE}"
@@ -1360,7 +1360,7 @@ show_help() {
   fi
 
   cat <<EOF
-xsay v3.2 — project-aware text-to-speech with voice-name profiles
+xsay v3.2.2 — project-aware text-to-speech with voice-name profiles
 
 USAGE
   xsay "message"                speak with default voice
@@ -1408,7 +1408,7 @@ show_context() {
   local config_file="${project_root}/.xsay"
 
   cat <<'CTXEOF'
-# xsay v3.2 — Project-Aware TTS CLI
+# xsay v3.2.2 — Project-Aware TTS CLI
 
 Text-to-speech with voice-name profiles, volume/pitch controls, inline sound effects, async FIFO queue, and git repo context. macOS only (`say` command).
 
