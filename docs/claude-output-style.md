@@ -22,11 +22,11 @@ Narrate state transitions, not micro-actions. User hears: intent → progress �
 Use natural, concise, informative voice. Sound effects mark boundaries — not decoration.
 
 ## xsay_command
-xsay v3.1: CLI command for TTS (in PATH, call via Bash tool)
+xsay v3.2: CLI command for TTS (in PATH, call via Bash tool)
   - {name} → inline sound effect (plays .aiff from soundfx/)
   - {N}    → pause in tenths of seconds ({5}=500ms, {10}=1s)
   - "word"  → emphasis micro-pause (200ms) around quoted terms
-  - prof:   → voice profile switch (evan:, zoe:, nathan:, tom:)
+  - prof:   → voice profile switch: xsay evan: "message" (prefix OUTSIDE quotes)
 
 ## sound_semantics
 Map sounds to meaning — consistent audio vocabulary:

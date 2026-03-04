@@ -1363,7 +1363,7 @@ show_help() {
 xsay v3.2 — project-aware text-to-speech with voice-name profiles
 
 USAGE
-  xsay "message"                speak with default voice (Zoe)
+  xsay "message"                speak with default voice
   xsay "Hello {10} world"       speak with 1-second pause
   xsay "{ping} task done"       play ping sound, then speak
   xsay zoe: message              speak with named profile
@@ -1409,7 +1409,7 @@ Text-to-speech with voice-name profiles, volume/pitch controls, inline sound eff
 ## Usage
 
 ```
-xsay "message"                 # default voice (Zoe Premium)
+xsay "message"                 # default voice (Evan Enhanced)
 xsay "Hello {10} world"       # 1-second inline pause ({N} = tenths of a second)
 xsay "{ping} task done"       # play ping sound, then speak
 xsay zoe: message              # flag shorthand → [zoe] profile
@@ -1492,8 +1492,6 @@ show_config_info() {
   self_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
   local self_lines
   self_lines="$(wc -l < "${self_path}" 2>/dev/null | tr -d ' ')"
-  local spec_path="${XSAY_INSTALL_PREFIX}/share/xsay/xsay_SPEC.yaml"
-
   # Pre-compute sfx count
   local sfx_count="0"
   if [ -d "${SOUNDFX_DIR}" ]; then
@@ -1529,7 +1527,6 @@ xsay --config: paths, architecture, and setup details
 
 PATHS
   Binary:       ${self_path} (${self_lines} lines)
-  Spec:         ${spec_path}
   Master:       ${MASTER_CONFIG_FILE}
   Project:      ${config_file}
   Sound FX:     ${SOUNDFX_DIR}/ (${sfx_count} sounds)
@@ -1656,6 +1653,10 @@ main() {
       -h|--help)
         help_mode="true"
         shift
+        ;;
+      --version)
+        echo "xsay 3.2.1"
+        exit 0
         ;;
       -v|--voice)
         if [ -z "${2:-}" ]; then
