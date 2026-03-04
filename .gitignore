@@ -18,5 +18,14 @@ loom/
 .idea/
 *.sublime-*
 
+# Dev-only overlay
+_xsay/
+
+# Homebrew tap (separate git repo)
+_on_homebrew/
+
+# Stale artifacts
+_archive/
+
 # Claude Code
 .claude/

@@ -937,7 +937,7 @@ API:
 DOCSTRING CONTRACT:
   PRE: message is a string.
   POST: all {N} tokens replaced; non-matching text unchanged.
-  UNIT: N = tenths of a second (e.g., {5} = 500ms, {10} = 1s, {20} = 2s).
+  UNIT: N = tenths of a second (e.g., {2} = 200ms, {3} = 300ms, {5} = 500ms).
 '
 expand_pauses() {
   local msg="$1"
@@ -1364,7 +1364,7 @@ xsay v3.2 — project-aware text-to-speech with voice-name profiles
 
 USAGE
   xsay "message"                speak with default voice
-  xsay "Hello {10} world"       speak with 1-second pause
+  xsay "Hello {2} world"        speak with 200ms pause
   xsay "{ping} task done"       play ping sound, then speak
   xsay zoe: message              speak with named profile
   xsay -v evan message           speak with profile by section name
@@ -1383,7 +1383,7 @@ CONFIG
 
 PAUSE TOKENS
   {N} in message text inserts a pause (N = tenths of a second)
-  Examples: {5} = 500ms, {10} = 1s, {20} = 2s
+  Examples: {1} = 100ms, {2} = 200ms, {3} = 300ms, {5} = 500ms
 
 SOUND EFFECTS
   {name} in message text plays a sound from soundfx/ directory
@@ -1394,6 +1394,12 @@ SOUND EFFECTS
 PROFILES
   evan, nathan, zoe, tom
   Flags: narrate→zoe, repo→nathan
+
+SPEED MODIFIERS
+  Add + after profile name to boost speech rate (+10 wpm per +, max +++):
+    xsay evan+: "a bit faster"       +10 wpm
+    xsay evan++: "getting urgent"    +20 wpm
+    xsay evan+++: "full speed"       +30 wpm
 EOF
 }
 
@@ -1410,7 +1416,7 @@ Text-to-speech with voice-name profiles, volume/pitch controls, inline sound eff
 
 ```
 xsay "message"                 # default voice (Evan Enhanced)
-xsay "Hello {10} world"       # 1-second inline pause ({N} = tenths of a second)
+xsay "Hello {2} world"        # 200ms pause ({N} = tenths of a second)
 xsay "{ping} task done"       # play ping sound, then speak
 xsay zoe: message              # flag shorthand → [zoe] profile
 xsay -v evan message           # explicit profile by section name
@@ -1433,13 +1439,26 @@ xsay --context                 # this output
 | `--context` | Print this LLM spec |
 | `-h, --help` | Human-readable help |
 | `flag:` | Shorthand — matches `flag=` key in [section] blocks (comma-separated) |
+| `name+:` | Speed modifier — +10 wpm per `+` (max `+++`) |
+
+## Speed Modifiers
+
+Append `+`, `++`, or `+++` to any profile name before the colon to boost speech rate.
+- `evan+:` → +10 wpm
+- `evan++:` → +20 wpm
+- `evan+++:` → +30 wpm (max)
+- Works with any profile or flag: `zoe+:`, `narrate++:`, `tom+++:`
+- AI usage: `+:` for brisk updates, `++:` for urgent, `+++:` for critical alerts
 
 ## Pause Tokens
 
 `{N}` in message → `[[slnc N*100ms]]` for macOS `say`. N = tenths of a second.
-- `{5}` → 500ms silence
-- `{10}` → 1s silence
-- `{20}` → 2s silence
+- `{1}` → 100ms (micro-pause, between phrases)
+- `{2}` → 200ms (short breath, most common)
+- `{3}` → 300ms (sentence break)
+- `{5}` → 500ms (long pause, use sparingly)
+- `{10}` → 1s (dramatic pause, rare)
+- NOTE: Punctuation (. , ! ?) already adds natural pauses. Don't stack {N} after periods — use {N} for pauses mid-sentence or between unpunctuated phrases.
 
 ## Sound Effects
 
@@ -1448,7 +1467,7 @@ xsay --context                 # this output
 - Producer converts `{name}` → `[[sfx:name]]` marker; consumer interleaves `say`/`afplay`.
 - `afplay -v` uses the profile's `volume=` setting for consistent loudness.
 - Available: basso, blow, bottle, frog, funk, glass, hero, morse, ping, pop, purr, sosumi, submarine, tink
-- Mixed tokens work: `{ping} Hello {10} world {hero}` → ping, speech, 1s pause, speech, hero
+- Mixed tokens work: `{ping} Hello {2} world {hero}` → ping, speech, 200ms pause, speech, hero
 
 ## Config Format (.xsay)
 
@@ -1746,12 +1765,16 @@ main() {
   fi
 
   # Detect colon-suffix flag shorthand: "narrate:" → look up flag
+  # Speed modifiers: "evan+:" → +10 wpm, "evan++:" → +20, "evan+++:" → +30 (max)
+  local rate_boost=0
   if [ "${voice_profile}" = "default" ] && [ "$#" -gt 0 ]; then
-    if [[ "$1" =~ ^([a-zA-Z0-9_-]+):$ ]]; then
+    if [[ "$1" =~ ^([a-zA-Z0-9_-]+)(\+{1,3})?:$ ]]; then
       local candidate_flag="${BASH_REMATCH[1]}"
+      local plus_count="${BASH_REMATCH[2]}"
       local matched_profile
       if matched_profile="$(resolve_flag_to_profile "${project_root}" "${candidate_flag}")"; then
         voice_profile="${matched_profile}"
+        rate_boost=$(( ${#plus_count} * 10 ))
         shift
       fi
       # If no match, $1 stays as part of message (no shift)
@@ -1759,6 +1782,11 @@ main() {
   fi
 
   config_parse "${project_root}" "${voice_profile}"
+
+  # Apply speed modifier: boost rate
+  if [ "${rate_boost}" -gt 0 ]; then
+    CONFIG_RATE=$(( CONFIG_RATE + rate_boost ))
+  fi
 
   # Help mode: show help and exit (also triggered by no args)
   if [ "${help_mode}" = "true" ] || { [ "$#" -eq 0 ] && [ "${list_mode}" = "false" ]; }; then

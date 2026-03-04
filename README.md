@@ -67,7 +67,7 @@ xsay works out of the box with macOS default voices. For significantly better qu
 
 ```bash
 xsay "Hello world"                    # speak with default voice
-xsay "{ping} Starting build {5}"      # sound effect + 500ms pause
+xsay "{ping} Starting build {2}"      # sound effect + 200ms pause
 xsay zoe: "Different voice"           # use a named profile
 xsay --sounds                         # list available sound effects
 xsay -l                               # list voice profiles
@@ -101,8 +101,8 @@ Inline sound effects via `{name}` tokens. Plays `.aiff` files between speech seg
 Use `{N}` for pauses in tenths of a second:
 
 ```bash
-xsay "First part {5} second part"     # 500ms pause
-xsay "Wait for it {10} there it is"   # 1 second pause
+xsay "First part {2} second part"     # 200ms pause
+xsay "Wait for it {5} there it is"    # 500ms pause
 ```
 
 ### Emphasis
