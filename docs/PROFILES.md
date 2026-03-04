@@ -45,6 +45,18 @@ xsay custom: "Hello from custom profile"
 xsay myvoice: "Same profile via flag"
 ```
 
+## Speed Modifiers
+
+Append `+`, `++`, or `+++` to any profile name before the colon to boost speech rate:
+
+```bash
+xsay evan+: "a bit faster"         # +10 wpm
+xsay evan++: "getting urgent"      # +20 wpm
+xsay evan+++: "full speed"         # +30 wpm (max)
+```
+
+Works with any profile or flag: `zoe+:`, `narrate++:`, `tom+++:`
+
 ## Available macOS Voices
 
 To see all voices installed on your Mac:

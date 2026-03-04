@@ -1674,7 +1674,7 @@ main() {
         shift
         ;;
       --version)
-        echo "xsay 3.2.1"
+        echo "xsay 3.2.2"
         exit 0
         ;;
       -v|--voice)

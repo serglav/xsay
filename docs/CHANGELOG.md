@@ -1,5 +1,19 @@
 # xsay Changelog
 
+## v3.2.2 — 2026-03-04
+
+### Added
+- **Speed modifiers**: `evan+:` (+10 wpm), `evan++:` (+20), `evan+++:` (+30 max) — shell-safe `+` syntax
+- **`--version` flag**: prints `xsay 3.2.2`
+- **Monorepo layout**: dev overlay (`_xsay/`), homebrew tap (`_on_homebrew/`), archive (`_archive/`)
+
+### Changed
+- **Pause examples**: primary examples now use `{1}`-`{3}` (shorter pauses), `{5}`/`{10}` demoted to "sparingly"/"rare"
+- **Punctuation warning**: context docs note that `.` `,` `!` `?` add natural pauses — don't stack with `{N}`
+- **Fixed default voice text**: help/context said "Zoe" but default is Evan (Enhanced)
+- **Removed dead `xsay_SPEC.yaml` reference** from `--config` output
+- **Updated output style version** from v3.1 to v3.2
+
 ## v3.2 — 2026-03-03
 
 ### Changed

@@ -27,6 +27,7 @@ xsay v3.2: CLI command for TTS (in PATH, call via Bash tool)
   - {N}    → pause in tenths of seconds ({2}=200ms, {3}=300ms)
   - "word"  → emphasis micro-pause (200ms) around quoted terms
   - prof:   → voice profile switch: xsay evan: "message" (prefix OUTSIDE quotes)
+  - prof+:  → speed modifier: evan+: (+10wpm), evan++: (+20), evan+++: (+30 max)
 
 ## sound_semantics
 Map sounds to meaning — consistent audio vocabulary:

@@ -134,6 +134,16 @@ xsay -v nathan "Clear and crisp"
 
 Custom profiles can be added to your project `.xsay` config file.
 
+### Speed Modifiers
+
+Append `+` to any profile name to boost speech rate (+10 wpm per `+`, max `+++`):
+
+```bash
+xsay evan+: "a bit faster"           # +10 wpm
+xsay evan++: "getting urgent"        # +20 wpm
+xsay evan+++: "full speed"           # +30 wpm
+```
+
 ---
 
 ## AI Integration
