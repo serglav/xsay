@@ -6,7 +6,6 @@
 
 # xsay runtime artifacts
 .xsay
-loom/
 *.log
 /tmp/
 
@@ -18,12 +17,12 @@ loom/
 .idea/
 *.sublime-*
 
-# Dev-only overlay
-_xsay/
+# Dev-only local workspace
+_xsay_local/
 _xwDOMAIN/
 
 # Homebrew tap (separate git repo)
-_on_homebrew/
+_xsay_homebrew/
 
 # Stale artifacts
 _archive/

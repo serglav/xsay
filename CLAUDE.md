@@ -5,22 +5,23 @@ Current version: **v3.2.2** (~1,849 lines bash). Public repo: `serglav/xsay`.
 
 ## Repository Structure
 
-This is a **monorepo with nested git repos**:
+This is a **meta-project** — the xsay workspace with nested git repos:
 
 ```
-/Users/Dev/xsay/                  ← PUBLIC repo (serglav/xsay)
+/Users/Dev/xsay/                  ← META-PROJECT root (serglav/xsay = public repo)
 ├── bin/xsay                      ← main script (1,849 lines)
 ├── share/xsay/xsay.conf          ← shipped default config (4 profiles)
 ├── share/xsay/soundfx/*.aiff     ← 14 system sound effects
 ├── Makefile                       ← self-contained install/uninstall
 ├── install.sh                     ← curl-friendly installer
-├── docs/                          ← CHANGELOG, PROFILES, SPEC, claude-output-style
-├── _on_homebrew/                  ← NESTED PUBLIC repo (serglav/homebrew-xsay)
+├── docs/                          ← CHANGELOG, PROFILES, claude-output-style
+├── _xsay_homebrew/                ← NESTED PUBLIC repo (serglav/homebrew-xsay)
 │   └── Formula/xsay.rb           ← Homebrew formula (must match version+sha256)
-├── _xsay/                         ← local dev workspace (research, tests)
+├── _xsay_local/                   ← local dev workspace (research, tests, loom)
 │   ├── research/                  ← voice testing docs, say command reference
 │   └── tests/                     ← test scripts
-└── _xwDOMAIN/                     ← work tracking (ADRs, tickets, sessions)
+├── _xwDOMAIN/                     ← work tracking (ADRs, tickets, sessions)
+└── _archive/                      ← graveyard (FULL_CLEANUP/)
 ```
 
 ### What's public vs private
@@ -28,12 +29,12 @@ This is a **monorepo with nested git repos**:
 | Directory | Git repo | Public | Gitignored from parent |
 |-----------|----------|--------|----------------------|
 | `/` (root) | `serglav/xsay` | Yes | — |
-| `_on_homebrew/` | `serglav/homebrew-xsay` | Yes | Yes (gitignored from root) |
-| `_xsay/` | none (local) | No | Yes |
+| `_xsay_homebrew/` | `serglav/homebrew-xsay` | Yes | Yes (gitignored from root) |
+| `_xsay_local/` | none (local) | No | Yes |
 | `_xwDOMAIN/` | none (local) | No | Yes |
 | `_archive/` | none (local) | No | Yes |
 
-**Critical**: `_xsay/`, `_xwDOMAIN/`, and `_archive/` are gitignored and NEVER pushed. They contain local-only dev artifacts.
+**Critical**: `_xsay_local/`, `_xwDOMAIN/`, and `_archive/` are gitignored and NEVER pushed. They contain local-only dev artifacts.
 
 ## Public Repo Discipline
 
@@ -53,7 +54,7 @@ All three locations must agree on the version:
 | `bin/xsay` line 2 | Header comment `# xsay vX.Y` |
 | `bin/xsay` `--version` output | Version string in show_help/version handler |
 | `docs/CHANGELOG.md` | New entry at top |
-| `_on_homebrew/Formula/xsay.rb` | `url` tag + `sha256` + `test` block version |
+| `_xsay_homebrew/Formula/xsay.rb` | `url` tag + `sha256` + `test` block version |
 
 ### Release process
 ```
@@ -62,7 +63,7 @@ All three locations must agree on the version:
 3. Push tag: git push origin vX.Y.Z
 4. Create GitHub release: gh release create vX.Y.Z --generate-notes
 5. Compute sha256: curl -sL <tarball_url> | shasum -a 256
-6. Update _on_homebrew/Formula/xsay.rb (url, sha256, test version)
+6. Update _xsay_homebrew/Formula/xsay.rb (url, sha256, test version)
 7. Commit & push serglav/homebrew-xsay
 8. Verify: brew update && brew upgrade xsay (or reinstall)
 ```
@@ -99,8 +100,11 @@ Async TTS via named pipe at `/tmp/xsay-${USER}.fifo`:
 - Pauses: `{N}` → tenths of seconds (`{5}` = 500ms)
 
 ### Speed modifiers
-Prefix syntax adjusts speech rate: `xsay 2x: message` (double speed), `xsay .5x: message` (half speed).
-Combinable with profiles: `xsay evan: 1.5x: message`.
+Append `+` to any profile name before the colon to boost speech rate (+10 wpm per `+`, max `+++`):
+- `xsay evan+: "faster"` → +10 wpm
+- `xsay evan++: "urgent"` → +20 wpm
+- `xsay evan+++: "full speed"` → +30 wpm (max)
+Works with any profile or flag: `zoe+:`, `narrate++:`, `tom+++:`
 
 ## xwDOMAIN (Work Tracking)
 
@@ -136,7 +140,7 @@ xsay nathan: "repo test"             # repo profile with template
 xsay narrate: "flag test"            # flag→profile resolution (zoe)
 xsay "{ping} sound test {hero}"      # inline sound effects
 xsay "pause {5} test"                # pause tokens
-xsay 2x: "speed test"               # speed modifier
+xsay evan+: "speed test"             # speed modifier (+10 wpm)
 xsay --help                          # help output, version correct
 xsay --version                       # version matches
 xsay --config                        # config paths resolve
@@ -149,7 +153,7 @@ xsay --sounds                        # sound effects list
 - **bash 3.2+** — must work with macOS default bash (no bash 4+ features)
 - **No `rm`** — use `trash` for all deletions
 - **No hardcoded paths** — everything resolves dynamically
-- **Spec file is stale** — `docs/xsay_SPEC.yaml` still references v3.1 paths from `claude-work/_xsay/`. Needs update if touched.
+- **Spec file removed** — `docs/xsay_SPEC.yaml` was stale (v3.1, personal paths) and has been archived.
 
 ## Key Files Quick Reference
 
@@ -159,7 +163,6 @@ xsay --sounds                        # sound effects list
 | `share/xsay/xsay.conf` | 49 | Shipped default config |
 | `Makefile` | ~25 | Install/uninstall targets |
 | `install.sh` | ~60 | Curl-friendly installer |
-| `_on_homebrew/Formula/xsay.rb` | 45 | Homebrew formula |
+| `_xsay_homebrew/Formula/xsay.rb` | 45 | Homebrew formula |
 | `docs/CHANGELOG.md` | — | Version history |
 | `docs/PROFILES.md` | — | Voice profile documentation |
-| `docs/xsay_SPEC.yaml` | 190 | Technical spec (STALE — v3.1 paths) |

@@ -5,7 +5,7 @@
 ### Added
 - **Speed modifiers**: `evan+:` (+10 wpm), `evan++:` (+20), `evan+++:` (+30 max) — shell-safe `+` syntax
 - **`--version` flag**: prints `xsay 3.2.2`
-- **Monorepo layout**: dev overlay (`_xsay/`), homebrew tap (`_on_homebrew/`), archive (`_archive/`)
+- **Monorepo layout**: dev workspace (`_xsay_local/`), homebrew tap (`_xsay_homebrew/`), archive (`_archive/`)
 
 ### Changed
 - **Pause examples**: primary examples now use `{1}`-`{3}` (shorter pauses), `{5}`/`{10}` demoted to "sparingly"/"rare"
