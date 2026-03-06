@@ -6,6 +6,7 @@
 
 # xsay runtime artifacts
 .xsay
+loom/
 *.log
 /tmp/
 
@@ -16,16 +17,6 @@
 .vscode/
 .idea/
 *.sublime-*
-
-# Dev-only local workspace
-_xsay_local/
-_xwDOMAIN/
-
-# Homebrew tap (separate git repo)
-_xsay_homebrew/
-
-# Stale artifacts
-_archive/
 
 # Claude Code
 .claude/
