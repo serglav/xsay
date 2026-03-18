@@ -1,11 +1,12 @@
 # xsay
 
-Project-aware macOS TTS CLI with voice profiles, inline sound effects, and async FIFO queue.
+**v3.5.1** — Project-aware macOS TTS CLI with voice profiles, inline sound effects, and async FIFO queue.
 
 ```bash
 xsay "Hello world"
 xsay "{ping} Task complete {hero}"
 xsay zoe: "Switching voices is easy"
+xsay -k                               # kill all speech instantly
 ```
 
 ---
@@ -38,40 +39,105 @@ Installs to `~/.local/bin` by default. Set `PREFIX` to change:
 PREFIX=/usr/local make install
 ```
 
-### Recommended Voices
+### Default Voice
 
-xsay works out of the box with macOS default voices. For significantly better quality, download Enhanced or Premium voices (free, ~100-900MB each).
+xsay uses your **macOS system voice** by default (System Settings > Accessibility > Spoken Content). No configuration needed — whatever voice you have set system-wide is what xsay speaks with.
 
-**Our top 4 after extensive testing (all ship as built-in profiles):**
+For best quality, download an Enhanced or Premium voice (free, ~100-900MB each):
 
-| Rank | Voice | Tier | Why |
-|------|-------|------|-----|
-| 1 | **Evan (Enhanced)** | Enhanced | Natural, balanced — xsay's default voice |
-| 2 | **Nathan (Enhanced)** | Enhanced | Clear, crisp articulation |
-| 3 | **Zoe (Premium)** | Premium | Rich, natural female voice |
-| 4 | **Tom (Enhanced)** | Enhanced | Deep, calm delivery |
+1. Open **System Settings > Accessibility > Spoken Content**
+2. Click **System Voice** dropdown > **Manage Voices...**
+3. Download voices like Evan (Enhanced), Zoe (Premium), or any you prefer
 
-**How to download:**
-
-1. Open **System Settings**
-2. Go to **Accessibility > Spoken Content**
-3. Click **System Voice** dropdown > **Manage Voices...**
-4. Search for the voice name (e.g. "Evan") and click the download button
-5. Wait for download to complete (Enhanced: ~100-200MB, Premium: ~350-850MB)
-
-> Not required — xsay falls back gracefully to the system default voice if an Enhanced/Premium voice isn't installed. No errors, just lower audio quality.
+Named profiles (`evan:`, `zoe:`, etc.) override the system voice with their specific voice.
 
 ---
 
 ## Quick Start
 
 ```bash
-xsay "Hello world"                    # speak with default voice
+xsay "Hello world"                    # speak with system voice
 xsay "{ping} Starting build {2}"      # sound effect + 200ms pause
 xsay zoe: "Different voice"           # use a named profile
+xsay evan++: "Faster speech"          # speed boost (+20 wpm)
 xsay --sounds                         # list available sound effects
 xsay -l                               # list voice profiles
+xsay -k                               # kill speech immediately
 ```
+
+---
+
+## AI Agent Integration
+
+xsay was built for voice-narrated AI coding sessions. Three commands give AI agents everything they need:
+
+| Command | Purpose |
+|---------|---------|
+| `xsay --context` | Quick reference for AI agents — usage, voices, pause rules, sound effects (~40 lines) |
+| `xsay --afk` | Self-contained autonomous session protocol — voice rules, update tiers, session boundaries |
+| `xsay -k` | Kill switch — instantly stops all speech |
+
+### `--context` — AI Quick Reference
+
+Outputs a focused spec designed for LLM context windows. Dynamic — lists voices from your project config and sounds from the installed soundfx directory. Teaches the agent how to call xsay correctly with one call pattern, pause rules, and sound semantics.
+
+```bash
+xsay --context    # paste into AI context or load via tool
+```
+
+### `--afk` — Autonomous Session Protocol
+
+Self-contained protocol for when you step away and let an AI agent work autonomously. Includes syntax cheat sheet (so the agent doesn't also need `--context`), voice rules, and three update tiers:
+
+- **Heartbeat** — every ~3 actions, voice-only status
+- **Phase Gate** — at phase boundaries, voice + 1-line chat
+- **Inflection Point** — blocked/done/tests, voice + full summary
+
+```bash
+xsay --afk       # agent reads this once, knows how to keep you posted
+```
+
+### `-k` / `--kill` — Kill Switch
+
+Instantly kills the xsay consumer process and all child `say`/`afplay` processes. Cleans up the FIFO.
+
+```bash
+xsay -k           # silence everything immediately
+xsay --kill       # same thing, long form
+```
+
+### Claude Code Output Style
+
+```bash
+mkdir -p ~/.claude/output-styles
+cp docs/claude-output-style.md ~/.claude/output-styles/xsay-tts.md
+```
+
+Then activate in Claude Code:
+```
+/output-style xsay-tts
+```
+
+Claude will narrate state transitions, use sound effects for semantic boundaries, and provide voice feedback throughout coding sessions.
+
+---
+
+## Flags
+
+| Flag | Action |
+|------|--------|
+| `-v NAME` | Select voice profile by section name |
+| `-l`, `--list-voices` | List all profiles with voice/rate/vol/pitch/flags |
+| `--sounds [name]` | List sound effects or preview one by name |
+| `--update` | Sync built-in profiles from master config, preserve custom |
+| `--config` | Show paths, architecture, config status |
+| `--context` | AI-focused quick reference — dynamic voices + sounds (~40 lines) |
+| `--afk` | Autonomous session protocol for AI agents (self-contained) |
+| `-k`, `--kill` | Kill consumer + child processes (`say`/`afplay`), clean up FIFO |
+| `--version` | Print version |
+| `-h`, `--help` | Human-readable help |
+| `flag:` | Shorthand — matches `flag=` key in profiles (e.g., `narrate:` resolves to zoe) |
+| `name+:` | Speed modifier — +10 wpm per `+` (max `+++`, e.g., `evan++:`) |
 
 ---
 
@@ -98,12 +164,14 @@ Inline sound effects via `{name}` tokens. Plays `.aiff` files between speech seg
 
 ### Pauses
 
-Use `{N}` for pauses in tenths of a second:
+Use `{N}` for pauses in tenths of a second. `{2}` (200ms) is the recommended max — macOS `say` already pauses naturally on punctuation.
 
 ```bash
 xsay "First part {2} second part"     # 200ms pause
-xsay "Wait for it {5} there it is"    # 500ms pause
+xsay "Step one {1} step two"          # 100ms micro-pause
 ```
+
+> **Rule**: Never place `{N}` after punctuation (`.` `!` `?` `,`) — `say` already pauses there.
 
 ### Emphasis
 
@@ -117,19 +185,20 @@ xsay 'This is "really" important'
 
 ## Voice Profiles
 
-4 built-in profiles. Switch with `name:` prefix or `-v name`.
+4 built-in profiles. The default voice uses your macOS system voice. Named profiles override with specific voices.
 
-| Profile | Voice | Rate | Use Case |
-|---------|-------|------|----------|
-| default | Evan (Enhanced) | 180 | Default, balanced |
-| evan | Evan (Enhanced) | 175 | General use |
-| nathan | Nathan (Enhanced) | 190 | Repo context announcer |
-| zoe | Zoe (Premium) | 180 | Narration |
-| tom | Tom (Enhanced) | 185 | Deep, calm |
+| Profile | Voice | Rate | Flags |
+|---------|-------|------|-------|
+| default | (system voice) | 180 | — |
+| evan | Evan (Enhanced) | 175 | evan |
+| nathan | Nathan (Enhanced) | 190 | nathan, repo |
+| zoe | Zoe (Premium) | 180 | zoe, narrate |
+| tom | Tom (Enhanced) | 185 | tom |
 
 ```bash
-xsay zoe: "Hello from Zoe"
-xsay -v nathan "Clear and crisp"
+xsay zoe: "Hello from Zoe"            # flag shorthand
+xsay -v nathan "Clear and crisp"      # explicit profile
+xsay narrate: "Uses Zoe"              # flag resolves to profile
 ```
 
 Custom profiles can be added to your project `.xsay` config file.
@@ -143,26 +212,6 @@ xsay evan+: "a bit faster"           # +10 wpm
 xsay evan++: "getting urgent"        # +20 wpm
 xsay evan+++: "full speed"           # +30 wpm
 ```
-
----
-
-## AI Integration
-
-xsay was built for voice-narrated AI coding sessions. It includes a Claude Code output style that makes Claude narrate its work via xsay.
-
-### Setup
-
-```bash
-mkdir -p ~/.claude/output-styles
-cp docs/claude-output-style.md ~/.claude/output-styles/xsay-tts.md
-```
-
-Then activate in Claude Code:
-```
-/output-style xsay-tts
-```
-
-Claude will narrate state transitions, use sound effects for semantic boundaries, and provide voice feedback throughout coding sessions.
 
 ---
 
@@ -194,9 +243,8 @@ voice=Nathan (Enhanced)
 rate=190
 stale_minutes=5       # re-announce after N min idle (0=always, -1=never)
 enabled=true          # false to disable
-template=REPO {2} {repo} {5}
+template=REPO {2} {repo}
 # Placeholders: {repo}, {branch}, {commit}, {time}
-# Pause tokens: {2}=200ms, {5}=500ms, {10}=1s
 ```
 
 ### Environment variables
@@ -214,10 +262,10 @@ xsay uses an async FIFO queue architecture:
 
 1. `xsay "message"` writes to a named pipe (`/tmp/xsay-$USER.fifo`)
 2. A background consumer process reads from the pipe and calls macOS `say`
-3. Messages return instantly; speech plays in order
+3. Messages return instantly (~2ms); speech plays in order
 4. The consumer self-terminates after 30 seconds of silence
 
-This means xsay never blocks your terminal or scripts.
+This means xsay never blocks your terminal or scripts. Use `xsay -k` to kill the consumer and all speech immediately.
 
 ---
 
