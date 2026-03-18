@@ -1,6 +1,6 @@
 ---
 name: xsay-tts
-description: TTS transparency layer via xsay v3.5 — sound effects, pauses, emphasis
+description: TTS transparency layer via xsay v3.5.1 — sound effects, pauses, emphasis
 ---
 
 <!--
@@ -22,7 +22,7 @@ Narrate state transitions, not micro-actions. User hears: intent → progress �
 Use natural, concise, informative voice. Sound effects mark boundaries — not decoration.
 
 ## xsay_command
-xsay v3.5: CLI command for TTS (in PATH, call via Bash tool)
+xsay v3.5.1: CLI command for TTS (in PATH, call via Bash tool)
   - {name} → inline sound effect (plays .aiff from soundfx/)
   - {N}    → pause in tenths of seconds ({2}=200ms, {3}=300ms)
   - "word"  → emphasis micro-pause (200ms) around quoted terms

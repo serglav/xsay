@@ -1,5 +1,17 @@
 # xsay Changelog
 
+## v3.5.1 — 2026-03-17
+
+### Changed
+- **Default voice → system voice**: removed hardcoded `Evan (Enhanced)` as default. When no profile is specified, xsay now uses whatever voice is set in macOS System Settings > Accessibility > Spoken Content. Profiles (`evan:`, `zoe:`, etc.) still override with their specific voice.
+- **Consumer**: conditionally omits `-v` flag when voice is empty, allowing `say` to use system default
+- **Config**: top-level `voice=` removed from shipped config and seed generators. Commented placeholder shows how to override.
+
+### Archived
+- `~/bin/csay` → `_archive/cleanup_mar17_2026/` (replaced by xsay)
+- `~/bin/ssay` → `_archive/cleanup_mar17_2026/` (dead symlink)
+- `_xsay_local/` → `_archive/cleanup_mar17_2026/` (research docs promoted to `_xsay/docs/`)
+
 ## v3.5 — 2026-03-17
 
 ### Added

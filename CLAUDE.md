@@ -1,7 +1,7 @@
 # xsay — Project Instructions
 
 macOS TTS CLI with voice profiles, inline sound effects, and async FIFO queue.
-Current version: **v3.5** (~1,849 lines bash). Public repo: `serglav/xsay`.
+Current version: **v3.5.1** (~1,849 lines bash). Public repo: `serglav/xsay`.
 
 ## Repository Structure
 
@@ -27,7 +27,7 @@ xsay/
 2. **User master**: `${XDG_CONFIG_HOME:-$HOME/.config}/xsay/xsay.conf` (copied from default on first run)
 3. **Project override**: `.xsay` in project root (auto-created from master, project-specific overrides)
 
-### Voice profiles (v3.5)
+### Voice profiles (v3.5.1)
 Four profiles with voice-name triggers:
 
 | Profile | Voice | Flags | Purpose |

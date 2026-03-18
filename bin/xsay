@@ -1,11 +1,11 @@
 #!/bin/bash
-# xsay v3.5 — project-aware macOS TTS with voice-name profiles + inline sound effects
+# xsay v3.5.1 — project-aware macOS TTS with voice-name profiles + inline sound effects
 
 set -o errexit
 set -o nounset
 set -o pipefail
 
-DEFAULT_VOICE="Evan (Enhanced)"
+DEFAULT_VOICE=""  # empty = use macOS system voice (System Settings > Accessibility > Spoken Content)
 DEFAULT_RATE="180"
 DEFAULT_VOLUME="1.0"
 DEFAULT_PITCH="45"
@@ -508,9 +508,9 @@ ensure_master_config() {
 
   # Fallback: write minimal seed config (broken install — shipped default missing)
   {
-    echo "# xsay v3.5 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.5.1.1 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
-    echo "voice=${DEFAULT_VOICE}"
+    echo "# voice=  (empty = use macOS system voice; set to override)"
     echo "rate=${DEFAULT_RATE}"
     echo "volume=${DEFAULT_VOLUME}"
     echo "pitch=${DEFAULT_PITCH}"
@@ -593,10 +593,10 @@ interactive_create_xsay() {
 
   # Fallback: write hardcoded seed (same content as ensure_master_config)
   {
-    echo "# xsay v3.5 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.5.1.1 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "# Keys: voice, rate (wpm), volume (0.0-1.0), pitch (0-127), flag (comma-separated triggers)"
-    echo "voice=${DEFAULT_VOICE}"
+    echo "# voice=  (empty = use macOS system voice; set to override)"
     echo "rate=${DEFAULT_RATE}"
     echo "volume=${DEFAULT_VOLUME}"
     echo "pitch=${DEFAULT_PITCH}"
@@ -885,7 +885,7 @@ SPEC:
 API:
   write_to_fifo(voice, rate, volume, pitch, message)
 DOCSTRING CONTRACT:
-  PRE: voice, rate, volume, pitch are non-empty strings; message non-empty.
+  PRE: voice may be empty (system default); rate, volume, pitch are non-empty strings; message non-empty.
   POST: best-effort TTS attempted via FIFO; failures only produce warnings.
 '
 write_to_fifo() {
@@ -1142,6 +1142,12 @@ consumer_loop() {
     # Emphasis cue instead of vocalizing "quotation mark"
     message="${message//\"/ [[slnc 200]] }"
 
+    # Build voice args: omit -v when voice is empty (use system default)
+    local say_voice_args=()
+    if [ -n "${voice}" ]; then
+      say_voice_args=(-v "${voice}")
+    fi
+
     # ── SFX interleave engine ──────────────────────────────────────
     # If message contains [[sfx:name]] markers, split into segments
     # and alternate say (text) / afplay (audio) calls sequentially.
@@ -1160,7 +1166,7 @@ consumer_loop() {
         # Speak text before sfx (skip if empty/whitespace-only)
         local trimmed="${before#"${before%%[![:space:]]*}"}"
         if [ -n "${trimmed}" ]; then
-          say -v "${voice}" -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
+          say "${say_voice_args[@]}" -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
         fi
 
         # Play sound effect with profile volume
@@ -1173,11 +1179,11 @@ consumer_loop() {
       # Speak remaining text after last sfx (skip if empty/whitespace-only)
       local trimmed="${remaining#"${remaining%%[![:space:]]*}"}"
       if [ -n "${trimmed}" ]; then
-        say -v "${voice}" -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
+        say "${say_voice_args[@]}" -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
       fi
     else
       # ── Standard path (no sfx markers) ────────────────────────────
-      say -v "${voice}" -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
+      say "${say_voice_args[@]}" -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
     fi
   done
 
@@ -1390,7 +1396,7 @@ show_help() {
   fi
 
   cat <<EOF
-xsay v3.5 — project-aware text-to-speech with voice-name profiles
+xsay v3.5.1 — project-aware text-to-speech with voice-name profiles
 
 USAGE
   xsay "message"                speak with default voice
@@ -1439,7 +1445,7 @@ show_context() {
 
   # ── Static: Overview, Usage, Pause ──
   cat <<'CTXEOF'
-# xsay v3.5 — TTS for AI Agents (macOS)
+# xsay v3.5.1 — TTS for AI Agents (macOS)
 
 Speak aloud from your Bash tool. Returns in ~2ms (async).
 Use cases: narrate work progress, voice transparency layer,
@@ -1494,7 +1500,7 @@ CTXEOF
   fi
 
   cat <<'CTXEOF'
-  default_voice=evan
+  default_voice=system (macOS Spoken Content setting)
 
   Speed: append + per +10 wpm (max +++). evan+: evan++: evan+++:
 
@@ -1777,7 +1783,7 @@ main() {
         shift
         ;;
       --version)
-        echo "xsay 3.5"
+        echo "xsay 3.5.1"
         exit 0
         ;;
       -v|--voice)
