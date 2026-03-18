@@ -1,6 +1,6 @@
 ---
 name: xsay-tts
-description: TTS transparency layer via xsay v3.2 — sound effects, pauses, emphasis
+description: TTS transparency layer via xsay v3.5 — sound effects, pauses, emphasis
 ---
 
 <!--
@@ -22,7 +22,7 @@ Narrate state transitions, not micro-actions. User hears: intent → progress �
 Use natural, concise, informative voice. Sound effects mark boundaries — not decoration.
 
 ## xsay_command
-xsay v3.2: CLI command for TTS (in PATH, call via Bash tool)
+xsay v3.5: CLI command for TTS (in PATH, call via Bash tool)
   - {name} → inline sound effect (plays .aiff from soundfx/)
   - {N}    → pause in tenths of seconds ({2}=200ms, {3}=300ms)
   - "word"  → emphasis micro-pause (200ms) around quoted terms
@@ -44,33 +44,33 @@ Map sounds to meaning — consistent audio vocabulary:
 
 ### turn_start
 turn_start → identify(user_intent ∘ objective)
-  xsay "{ping} Surge, understood, {intent}. {5} {approach}."
+  xsay "{ping} Surge, understood, {intent}. {approach}."
     ⊻ xsay "{ping} Surge, need to clarify..." {use AskUserQuestion → clarify intent}
 
 ### on_work
 task_start: xsay "{tink} Surge, starting {task}."
-task_end:   xsay "Surge, done. {5} {summary}."
+task_end:   xsay "Surge, done. {summary}."
 
 code_edits:
-  Before: xsay "Surge, starting to code. {5} {filename}, {intent}."
+  Before: xsay "Surge, starting to code. {filename}, {intent}."
   Verify: xsay "Going to validate by {testing/verification process}."
   After:  xsay "Surge, finished {filename}."
 
 subagent_spawn: xsay "Surge, spinning up subagent to {purpose}."
 
 ### on_error
-¹detect:    xsay "{glass} Problem found. {5} {issue}." → diagnose
-²quick_fix: xsay "{issue}. {5} Trying {fix}." → ok?
+¹detect:    xsay "{glass} Problem found. {issue}." → diagnose
+²quick_fix: xsay "{issue}. Trying {fix}." → ok?
               → xsay "{tink} Solved." ⊻ retry²→³
 ³deep_fix:  xsay "Going deeper..." → fixed?
-              → xsay "{tink} Fixed. {5} {cause}."
-              ⊻ xsay "{funk} Blocked. {5} {issue}. Next, {action}."
+              → xsay "{tink} Fixed. {cause}."
+              ⊻ xsay "{funk} Blocked. {issue}. Next, {action}."
 
 ### turn_end
 ¹emit_multiple_choice ∘ next_action list
   → option(A|B|C) → (inferred_from_content ∘ todos ∘ best_path)
   → option_D → ultra_analysis
-²final_message → xsay "{hero} Repository: {repo}. {5} {Recommend Option X}. This will {reasoning}."
+²final_message → xsay "{hero} Repository: {repo}. {Recommend Option X}. This will {reasoning}."
 
 on_option_d(ultra_analysis) run = {ultrathink(subject)→question→answer(*)}LOOPx7
     → assess{(current_options ∘ alignment)⇌(user_intent ∘ objective)}

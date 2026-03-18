@@ -1,5 +1,5 @@
 #!/bin/bash
-# xsay v3.2.2 — project-aware macOS TTS with voice-name profiles + inline sound effects
+# xsay v3.5 — project-aware macOS TTS with voice-name profiles + inline sound effects
 
 set -o errexit
 set -o nounset
@@ -508,7 +508,7 @@ ensure_master_config() {
 
   # Fallback: write minimal seed config (broken install — shipped default missing)
   {
-    echo "# xsay v3.2.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.5 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "voice=${DEFAULT_VOICE}"
     echo "rate=${DEFAULT_RATE}"
@@ -593,7 +593,7 @@ interactive_create_xsay() {
 
   # Fallback: write hardcoded seed (same content as ensure_master_config)
   {
-    echo "# xsay v3.2.2 master config — edit here, then delete project .xsay to regenerate"
+    echo "# xsay v3.5 master config — edit here, then delete project .xsay to regenerate"
     echo "# Voices: Evan (Enhanced) | Nathan (Enhanced) | Zoe (Premium) | Tom (Enhanced)"
     echo "# Keys: voice, rate (wpm), volume (0.0-1.0), pitch (0-127), flag (comma-separated triggers)"
     echo "voice=${DEFAULT_VOICE}"
@@ -1042,6 +1042,36 @@ DOCSTRING CONTRACT:
   PRE: BASH_SOURCE[0] is the script path; FIFO_PATH and PID_FILE are writable /tmp paths.
   POST: consumer running after ensure_consumer; FIFO and PID_FILE cleaned up after consumer_loop exits.
 '
+kill_all() {
+  local killed=0
+
+  # 1. Kill consumer process via PID file
+  if [ -f "${PID_FILE}" ]; then
+    local cpid
+    cpid="$(cat "${PID_FILE}" 2>/dev/null || echo "")"
+    if [ -n "${cpid}" ] && kill -0 "${cpid}" 2>/dev/null; then
+      # Kill consumer's child processes (say, afplay) first
+      pkill -9 -P "${cpid}" 2>/dev/null
+      kill -9 "${cpid}" 2>/dev/null
+      killed=$((killed + 1))
+    fi
+    rm -f "${PID_FILE}"
+  fi
+
+  # 2. Kill any orphaned say/afplay from xsay consumer
+  #    Match only processes whose parent was our consumer or that read our FIFO
+  pkill -9 -f "xsay.*--consumer" 2>/dev/null && killed=$((killed + 1))
+
+  # 3. Clean up FIFO
+  rm -f "${FIFO_PATH}"
+
+  if [ "${killed}" -gt 0 ]; then
+    echo "xsay: killed consumer + children, cleaned up FIFO"
+  else
+    echo "xsay: nothing running"
+  fi
+}
+
 ensure_consumer() {
   if [ ! -p "${FIFO_PATH}" ]; then
     if ! mkfifo "${FIFO_PATH}" 2>/dev/null; then
@@ -1360,7 +1390,7 @@ show_help() {
   fi
 
   cat <<EOF
-xsay v3.2.2 — project-aware text-to-speech with voice-name profiles
+xsay v3.5 — project-aware text-to-speech with voice-name profiles
 
 USAGE
   xsay "message"                speak with default voice
@@ -1407,101 +1437,173 @@ show_context() {
   local project_root="$1"
   local config_file="${project_root}/.xsay"
 
+  # ── Static: Overview, Usage, Pause ──
   cat <<'CTXEOF'
-# xsay v3.2.2 — Project-Aware TTS CLI
+# xsay v3.5 — TTS for AI Agents (macOS)
 
-Text-to-speech with voice-name profiles, volume/pitch controls, inline sound effects, async FIFO queue, and git repo context. macOS only (`say` command).
+Speak aloud from your Bash tool. Returns in ~2ms (async).
+Use cases: narrate work progress, voice transparency layer,
+debate mode (alternate voices), AFK status updates, error/completion alerts.
 
 ## Usage
 
-```
-xsay "message"                 # default voice (Evan Enhanced)
-xsay "Hello {2} world"        # 200ms pause ({N} = tenths of a second)
-xsay "{ping} task done"       # play ping sound, then speak
-xsay zoe: message              # flag shorthand → [zoe] profile
-xsay -v evan message           # explicit profile by section name
-xsay -l                        # list profiles with vol/pitch
-xsay --sounds                  # list available sound effects
-xsay --update                  # sync built-in profiles from master
-xsay --config                  # paths, architecture, internals
-xsay --context                 # this output
-```
+  xsay "message"                   default voice
+  xsay "{ping} task complete"      sound effect + speech
+  xsay zoe: "narration text"       switch voice (prefix OUTSIDE quotes)
+  xsay evan++: "urgent update"     speed boost (+20 wpm)
 
-## Flags
+CTXEOF
 
-| Flag | Action |
-|------|--------|
-| `-v NAME` | Select voice profile by [section] name |
-| `-l` | List all profiles with voice/rate/vol/pitch/flags |
-| `--sounds [name]` | List sound effects or preview one by name |
-| `--update` | Sync built-in profiles from master, preserve custom |
-| `--config` | Show paths, architecture, config status |
-| `--context` | Print this LLM spec |
-| `-h, --help` | Human-readable help |
-| `flag:` | Shorthand — matches `flag=` key in [section] blocks (comma-separated) |
-| `name+:` | Speed modifier — +10 wpm per `+` (max `+++`) |
+  # ── Dynamic: Available Voices from .xsay ──
+  echo "## Available Voices"
+  echo ""
+  printf "  %-12s %-6s %-6s %-6s %s\n" "voice" "rate" "vol" "pitch" "flags"
+  # Emit default voice first
+  printf "  %-12s %-6s %-6s %-6s %s\n" "default" "${CONFIG_RATE}" "${CONFIG_VOLUME}" "${CONFIG_PITCH}" "—"
 
-## Speed Modifiers
+  if [ -f "${config_file}" ]; then
+    local ctx_section="" ctx_voice="" ctx_rate="" ctx_vol="" ctx_pitch="" ctx_flag=""
+    while IFS= read -r line || [ -n "${line}" ]; do
+      case "${line}" in ""|"#"*) continue ;; esac
+      if [[ "${line}" =~ ^\[([a-zA-Z0-9_-]+)\] ]]; then
+        if [ -n "${ctx_section}" ]; then
+          printf "  %-12s %-6s %-6s %-6s %s\n" \
+            "${ctx_section}:" "${ctx_rate:-${CONFIG_RATE}}" \
+            "${ctx_vol:-${CONFIG_VOLUME}}" "${ctx_pitch:-${CONFIG_PITCH}}" \
+            "${ctx_flag:-—}"
+        fi
+        ctx_section="${BASH_REMATCH[1]}"
+        ctx_voice="" ctx_rate="" ctx_vol="" ctx_pitch="" ctx_flag=""
+        continue
+      fi
+      local key="${line%%=*}" value="${line#*=}"
+      key="${key#"${key%%[![:space:]]*}"}" key="${key%"${key##*[![:space:]]}"}"
+      value="${value#"${value%%[![:space:]]*}"}" value="${value%"${value##*[![:space:]]}"}"
+      case "${key}" in
+        rate) ctx_rate="${value}" ;; volume) ctx_vol="${value}" ;;
+        pitch) ctx_pitch="${value}" ;; flag) ctx_flag="${value}" ;;
+      esac
+    done < "${config_file}"
+    # Print last section
+    if [ -n "${ctx_section}" ]; then
+      printf "  %-12s %-6s %-6s %-6s %s\n" \
+        "${ctx_section}:" "${ctx_rate:-${CONFIG_RATE}}" \
+        "${ctx_vol:-${CONFIG_VOLUME}}" "${ctx_pitch:-${CONFIG_PITCH}}" \
+        "${ctx_flag:-—}"
+    fi
+  fi
 
-Append `+`, `++`, or `+++` to any profile name before the colon to boost speech rate.
-- `evan+:` → +10 wpm
-- `evan++:` → +20 wpm
-- `evan+++:` → +30 wpm (max)
-- Works with any profile or flag: `zoe+:`, `narrate++:`, `tom+++:`
-- AI usage: `+:` for brisk updates, `++:` for urgent, `+++:` for critical alerts
+  cat <<'CTXEOF'
+  default_voice=evan
+
+  Speed: append + per +10 wpm (max +++). evan+: evan++: evan+++:
 
 ## Pause Tokens
 
-`{N}` in message → `[[slnc N*100ms]]` for macOS `say`. N = tenths of a second.
-- `{1}` → 100ms (micro-pause, between phrases)
-- `{2}` → 200ms (short breath, most common)
-- `{3}` → 300ms (sentence break)
-- `{5}` → 500ms (long pause, use sparingly)
-- `{10}` → 1s (dramatic pause, rare)
-- NOTE: Punctuation (. , ! ?) already adds natural pauses. Don't stack {N} after periods — use {N} for pauses mid-sentence or between unpunctuated phrases.
+  RULE: NEVER place {N} after punctuation (. ! ? ,) — say already pauses.
 
-## Sound Effects
+  {1}   100ms   micro-pause between phrases
+  {2}   200ms   standard pause — this is the max
 
-`{name}` in message → plays matching `.aiff` from `soundfx/` directory inline.
-- Only expands when `soundfx/{name}.aiff` exists; unknown names pass through as literal text.
-- Producer converts `{name}` → `[[sfx:name]]` marker; consumer interleaves `say`/`afplay`.
-- `afplay -v` uses the profile's `volume=` setting for consistent loudness.
-- Available: basso, blow, bottle, frog, funk, glass, hero, morse, ping, pop, purr, sosumi, submarine, tink
-- Mixed tokens work: `{ping} Hello {2} world {hero}` → ping, speech, 200ms pause, speech, hero
+  GOOD:  xsay "Problem found. The issue is memory."
+  GOOD:  xsay "Step one {1} read config {2} then validate."
+  BAD:   xsay "Problem found. {5} The issue is..."
 
-## Config Format (.xsay)
-
-INI-style at project root. Auto-created from master config.
-
-- **Top-level keys** (before any [section]): `voice`, `rate`, `volume`, `pitch`, `logging_enabled`, `log_subdir`
-- **[section]** blocks: override `voice`, `rate`, `volume`, `pitch`; add `flag=` for shorthand (comma-separated)
-- **[nathan]** special keys: `stale_minutes`, `enabled`, `template` (placeholders: `{repo}`, `{branch}`, `{commit}`, `{time}`)
-- `--update` syncs built-in sections from master; custom [sections] preserved
-
-## Built-in Profiles
-
-| Profile | Voice | Rate | Vol | Pitch | Flags |
-|---------|-------|------|-----|-------|-------|
-| default | Evan (Enhanced) | 180 | 1.0 | 45 | — |
-| evan | Evan (Enhanced) | 175 | 1.0 | 45 | evan |
-| nathan | Nathan (Enhanced) | 190 | 0.9 | 45 | nathan,repo |
-| zoe | Zoe (Premium) | 180 | 1.0 | 45 | zoe,narrate |
-| tom | Tom (Enhanced) | 185 | 1.0 | 45 | tom |
-
-## Architecture
-
-Async FIFO queue at `/tmp/xsay.fifo`. Producer writes `voice|rate|vol|pitch|message [[slnc 500]]` and returns in ~2ms. Background consumer reads FIFO, applies `[[volm vol]][[pbas pitch]]` prefix, calls `say`, exits after 30s idle. Double-fork spawn, PID tracked at `/tmp/xsay.pid`. Backward-compatible: consumer detects 3-field (v2) vs 5-field (v3) protocol lines. When `[[sfx:name]]` markers are present, consumer interleaves `say` (text) and `afplay` (audio) calls sequentially.
-
-## Paths
 CTXEOF
 
-  cat <<CTXEOF2
-- Binary: $(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
-- Project config: ${config_file}
-- Master config: ${MASTER_CONFIG_FILE}
-- FIFO: ${FIFO_PATH}
-- Logs: {project_root}/${CONFIG_LOG_SUBDIR}/xlog_MMM_dd_YYYY.yaml
-CTXEOF2
+  # ── Dynamic: Sound Effects from soundfx/ ──
+  echo "## Sound Effects"
+  echo ""
+  echo "  {name} in message plays the matching .aiff sound inline."
+  echo ""
+  cat <<'CTXEOF'
+  {ping}   attention / turn start       {glass}  error / issue found
+  {tink}   transition / acknowledgment  {funk}   blocked / warning
+  {hero}   completion / success         {pop}    quick ack / minor
+
+CTXEOF
+
+  # Dynamic sound list
+  if [ -d "${SOUNDFX_DIR}" ]; then
+    local sfx_names="" sfx_count=0
+    for f in "${SOUNDFX_DIR}"/*.aiff; do
+      [ -f "${f}" ] || continue
+      local sname
+      sname="$(basename "${f}" .aiff)"
+      if [ -n "${sfx_names}" ]; then
+        sfx_names="${sfx_names} ${sname}"
+      else
+        sfx_names="${sname}"
+      fi
+      sfx_count=$((sfx_count + 1))
+    done
+    echo "  All ${sfx_count}: ${sfx_names}"
+  fi
+
+  cat <<'CTXEOF'
+
+  Mixed: xsay "{ping} Hello {2} world {hero}"
+
+  AFK mode: xsay --afk (autonomous session protocol for AI agents)
+CTXEOF
+}
+
+show_afk() {
+  cat <<'AFKEOF'
+# xsay --afk — Autonomous Session Protocol
+
+  SYNTAX (call via Bash tool, returns ~2ms)
+  ──────
+    xsay "message"                   default voice
+    xsay "{ping} task complete"      sound + speech
+    xsay narrate: "summary text"     voice switch (prefix OUTSIDE quotes)
+    xsay evan++: "urgent"            speed boost (+10 per +, max +++)
+
+  PAUSE: {1}=100ms {2}=200ms — that's the max.
+         NEVER after punctuation (. ! ?) — say already pauses.
+
+  SOUNDS: {ping} start  {tink} transition  {hero} success
+          {glass} error  {funk} blocked  {pop} minor ack
+
+  ┌─────────────────────────────────────────────────────┐
+  │  SESSION XSAY PROTOCOL                              │
+  │  Working on another project — you have the wheel.   │
+  │  Keep me posted via xsay.                           │
+  └─────────────────────────────────────────────────────┘
+
+  VOICE RULES
+  ───────────
+    default     → heartbeats, phase gates, general speech
+    narrate:    → TLDR summaries only
+    announce:   → blocked/inflection points only
+    Never speak on behalf of the user
+
+  UPDATE TIERS
+  ────────────
+                     ┌─────────────┐
+    🟢 HEARTBEAT     │ ~3 actions  │  xsay "{progress}% — {task}"
+                     │             │  Voice only. No chat output.
+                     ├─────────────┤
+    🟡 PHASE GATE    │ boundaries  │  xsay "{completed}. Next, {follows}."
+                     │             │  + 1-line chat note
+                     ├─────────────┤
+    🔴 INFLECTION    │ blocked /   │  xsay announce: "{tag} — {summary}"
+                     │ done / test │  + full chat summary (self-contained)
+                     └─────────────┘
+    Tags: 🔴 BLOCKED | 🟡 FYI | 🟢 DONE
+
+  SESSION BOUNDARY
+  ────────────────
+    Context limits or unrecoverable error:
+      → Post final inflection summary: done / in-progress / remaining / blockers
+      → xsay "Surge, session ending. Summary posted."
+
+  ON COMPLETION
+  ─────────────
+    TLDR list with {1} pauses between items:
+      xsay narrate: "Item one. {1} Item two. {1} Item three."
+    + chat: ascii diagram of what changed + standard end-turn summary
+AFKEOF
 }
 
 show_config_info() {
@@ -1664,6 +1766,7 @@ main() {
   local update_mode="false"
   local config_mode="false"
   local context_mode="false"
+  local afk_mode="false"
   local sounds_mode="false"
 
   # Parse standard CLI flags
@@ -1674,7 +1777,7 @@ main() {
         shift
         ;;
       --version)
-        echo "xsay 3.2.2"
+        echo "xsay 3.5"
         exit 0
         ;;
       -v|--voice)
@@ -1700,6 +1803,14 @@ main() {
       --context)
         context_mode="true"
         shift
+        ;;
+      --afk)
+        afk_mode="true"
+        shift
+        ;;
+      -k|--kill)
+        kill_all
+        exit 0
         ;;
       --sounds)
         sounds_mode="true"
@@ -1749,6 +1860,12 @@ main() {
   if [ "${context_mode}" = "true" ]; then
     config_parse "${project_root}"
     show_context "${project_root}"
+    exit 0
+  fi
+
+  # AFK mode: autonomous session protocol for AI agents
+  if [ "${afk_mode}" = "true" ]; then
+    show_afk
     exit 0
   fi
 

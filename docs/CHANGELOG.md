@@ -1,5 +1,30 @@
 # xsay Changelog
 
+## v3.5 — 2026-03-17
+
+### Added
+- **`--afk` flag**: self-contained autonomous session protocol for AI agents — includes syntax cheat sheet, voice rules, update tiers (heartbeat/phase gate/inflection), session boundary handling. No need to also run `--context`; `--afk` is fully self-contained
+- **`-k` / `--kill` flag**: instantly kills xsay consumer + child processes (`say`/`afplay`), cleans up FIFO. Targeted kill via PID file — no broad `pkill` patterns
+- **AFK session protocol**: voice rules (default/narrate:/announce:), three update tiers (heartbeat → phase gate → inflection), session boundary handling, on-completion TLDR narration
+
+### Changed
+- **`--context` redesigned for AI agents**: stripped from ~90 lines to ~40. Removed: markdown tables, architecture section, paths, config format, verbose flags list. Now focused on one call pattern, pause rule, sound semantics
+- **Dynamic voice listing**: `--context` parses project `.xsay` config and emits tabular format (voice/rate/vol/pitch/flags) instead of hardcoded table
+- **Dynamic sound listing**: `--context` scans `soundfx/` directory for count and names instead of hardcoded list
+- **Pause tokens**: `{2}` (200ms) is now the hard max — `{3}`/`{5}`/`{10}` removed from recommendations entirely. GOOD/BAD examples reinforce the punctuation rule
+- **Output style (`claude-output-style.md`)**: removed all 8 `{5}` pauses from xsay templates — every one was after punctuation, violating its own RULE
+
+### Removed
+- Architecture section from `--context` (moved to `--config`)
+- Paths section from `--context` (available via `--config`)
+- Config format section from `--context` (available via `--help`)
+- Static built-in profiles table from `--context` (replaced by dynamic emission)
+- Markdown tables from `--context` (replaced by indented plain lists)
+
+### Docs
+- **Meta-project CLAUDE.md**: added "Three Repos" section explaining each location's role, expanded version alignment checklist from 4 → 11 touch points
+- **Project CLAUDE.md**: version refs updated to v3.5
+
 ## v3.2.2 — 2026-03-04
 
 ### Added
