@@ -1142,16 +1142,13 @@ consumer_loop() {
     # Emphasis cue instead of vocalizing "quotation mark"
     message="${message//\"/ [[slnc 200]] }"
 
-    # Build voice args: omit -v when voice is empty (use system default)
-    local say_voice_args=()
-    if [ -n "${voice}" ]; then
-      say_voice_args=(-v "${voice}")
-    fi
-
     # ── SFX interleave engine ──────────────────────────────────────
     # If message contains [[sfx:name]] markers, split into segments
     # and alternate say (text) / afplay (audio) calls sequentially.
     # Non-sfx messages take the fast path (single say call).
+    #
+    # Note: voice may be empty (system default). Bash 3.2 + nounset
+    # chokes on empty arrays, so we use conditionals instead.
     if [[ "${message}" == *'[[sfx:'* ]]; then
       local say_prefix="[[volm ${vol}]][[pbas ${pitch}]]"
       local remaining="${message}"
@@ -1166,7 +1163,11 @@ consumer_loop() {
         # Speak text before sfx (skip if empty/whitespace-only)
         local trimmed="${before#"${before%%[![:space:]]*}"}"
         if [ -n "${trimmed}" ]; then
-          say "${say_voice_args[@]}" -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
+          if [ -n "${voice}" ]; then
+            say -v "${voice}" -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
+          else
+            say -r "${rate}" "${say_prefix}${before}" >/dev/null 2>&1 || true
+          fi
         fi
 
         # Play sound effect with profile volume
@@ -1179,11 +1180,19 @@ consumer_loop() {
       # Speak remaining text after last sfx (skip if empty/whitespace-only)
       local trimmed="${remaining#"${remaining%%[![:space:]]*}"}"
       if [ -n "${trimmed}" ]; then
-        say "${say_voice_args[@]}" -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
+        if [ -n "${voice}" ]; then
+          say -v "${voice}" -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
+        else
+          say -r "${rate}" "${say_prefix}${remaining}" >/dev/null 2>&1 || true
+        fi
       fi
     else
       # ── Standard path (no sfx markers) ────────────────────────────
-      say "${say_voice_args[@]}" -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
+      if [ -n "${voice}" ]; then
+        say -v "${voice}" -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
+      else
+        say -r "${rate}" "[[volm ${vol}]][[pbas ${pitch}]]${message}" >/dev/null 2>&1 || true
+      fi
     fi
   done
 
